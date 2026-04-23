@@ -152,6 +152,24 @@ class HereView(QWidget):
             min(max(0.0, y), max_y),
         )
 
+    def suggested_insert_position(self, image: QImage, source_index: int = -1) -> tuple[float, float]:
+        target_w, target_h = self._initial_block_dimensions(image)
+        base_x, base_y = self._default_block_position(target_w, target_h)
+        if source_index < 0:
+            return base_x, base_y
+        same_source_count = sum(
+            1 for block in self.blocks
+            if int(block.get('source_index', -1)) == source_index
+        )
+        if same_source_count <= 0:
+            return base_x, base_y
+        offset_step = 18.0
+        max_x = max(0.0, float(self.scene_size[0]) - target_w)
+        max_y = max(0.0, float(self.scene_size[1]) - target_h)
+        x = max(0.0, min(max_x, base_x - offset_step * same_source_count))
+        y = max(0.0, min(max_y, base_y - offset_step * same_source_count))
+        return x, y
+
     def _make_block(self, image: QImage, source_index: int = -1, x: float | None = None, y: float | None = None) -> dict:
         idx = sum(len(p) for p in self.pages)
         target_w, target_h = self._initial_block_dimensions(image)

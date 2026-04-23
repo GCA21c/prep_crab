@@ -430,7 +430,8 @@ class MainWindow(QMainWindow):
 
     def _send_clipboard_to_here(self, image, row: int) -> None:
         self._push_undo_state()
-        self.here_view.add_block(image, row)
+        x, y = self.here_view.suggested_insert_position(image, row)
+        self.here_view.add_block(image, row, x=x, y=y)
 
     def _duplicate_here_selection(self, payload, offset_info) -> None:
         self._push_undo_state()
