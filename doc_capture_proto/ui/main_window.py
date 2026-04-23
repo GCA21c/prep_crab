@@ -54,7 +54,7 @@ class LampLabel(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle('Preb Crab™ ver 0.1')
+        self.setWindowTitle('Prep_Crab™ ver 0.1')
         self.resize(1600, 950)
 
         self.loader = DocumentLoader()
