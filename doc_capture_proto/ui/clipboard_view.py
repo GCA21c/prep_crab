@@ -60,7 +60,7 @@ class ImagePreview(QWidget):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor('#f8f9fb' if self.active_highlight else 'white'))
+        painter.fillRect(self.rect(), QColor('#ffffff' if self.active_highlight else 'white'))
         painter.setPen(QColor('#203a69'))
         painter.drawText(self.rect().adjusted(8, 6, -8, -6), Qt.AlignTop | Qt.AlignLeft, self.title)
         if self.image is None or self.image.isNull():
@@ -156,12 +156,12 @@ HERE
         self.live_preview.set_active_highlight(active)
         self.saved_preview.set_active_highlight(active)
         self.list_widget.setStyleSheet(
-            'QListWidget {background:#f8f9fb; border:1px solid #8ea3bd;}'
+            'QListWidget {background:#ffffff; border:1px solid #8ea3bd;}'
             if active else
             'QListWidget {background:white; border:1px solid #8ea3bd;}'
         )
         self.help_frame.setStyleSheet(
-            'QFrame {border:none; background:#f9fcff;}'
+            'QFrame {border:none; background:#ffffff;}'
             if active else
             'QFrame {border:none; background:#f8fbff;}'
         )

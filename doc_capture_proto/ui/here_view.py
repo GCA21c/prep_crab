@@ -772,7 +772,7 @@ class HereView(QWidget):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor('#f1f1f1' if self.active_highlight else '#efefef'))
+        painter.fillRect(self.rect(), QColor('#f4f4f4' if self.active_highlight else '#efefef'))
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
 
         page_rect = self._page_rect_view()
