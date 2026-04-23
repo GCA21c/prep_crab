@@ -8,13 +8,13 @@ PARENT_DIR = os.path.dirname(CURRENT_DIR)
 if PARENT_DIR not in sys.path:
     sys.path.insert(0, PARENT_DIR)
 
-APP_ICON_PATH = Path(CURRENT_DIR) / "resources" / "app_icon.ico"
+APP_ICON_PATH = Path(PARENT_DIR) / "resources" / "app_icon.ico"
 
 
 def run():
     from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
-    from doc_capture_proto.ui.main_window import MainWindow
+    from ui.main_window import MainWindow
 
     app = QApplication(sys.argv)
     if APP_ICON_PATH.exists():

@@ -4,8 +4,8 @@ from PySide6.QtCore import QPointF, QRectF, Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QImage, QPainter, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-from doc_capture_proto.core.capture_utils import maybe_trim
-from doc_capture_proto.core.document_loader import DocumentLoader
+from core.capture_utils import maybe_trim
+from core.document_loader import DocumentLoader
 
 
 class OriginView(QWidget):

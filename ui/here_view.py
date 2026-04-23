@@ -7,7 +7,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QImage, QPainter, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-from doc_capture_proto.core.capture_utils import find_content_bounds
+from core.capture_utils import find_content_bounds
 
 
 class HereView(QWidget):

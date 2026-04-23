@@ -4,7 +4,7 @@ from PySide6.QtCore import QEvent, QMimeData, QPoint, Qt, Signal
 from PySide6.QtGui import QColor, QDrag, QImage, QMouseEvent, QPainter, QPixmap
 from PySide6.QtWidgets import QFrame, QInputDialog, QLabel, QListWidget, QListWidgetItem, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
-from doc_capture_proto.core.clipboard_store import ClipboardItem, ClipboardStore
+from core.clipboard_store import ClipboardItem, ClipboardStore
 
 
 class ImagePreview(QWidget):

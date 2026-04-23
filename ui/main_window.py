@@ -17,13 +17,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from doc_capture_proto.core.clipboard_store import ClipboardItem, ClipboardStore
-from doc_capture_proto.core.document_loader import DocumentLoader
-from doc_capture_proto.core.pdf_exporter import PdfExporter
-from doc_capture_proto.core.project_store import ProjectStore
-from doc_capture_proto.ui.clipboard_view import ClipboardView
-from doc_capture_proto.ui.here_view import HereView
-from doc_capture_proto.ui.origin_view import OriginView
+from core.clipboard_store import ClipboardItem, ClipboardStore
+from core.document_loader import DocumentLoader
+from core.pdf_exporter import PdfExporter
+from core.project_store import ProjectStore
+from ui.clipboard_view import ClipboardView
+from ui.here_view import HereView
+from ui.origin_view import OriginView
 
 
 class LampLabel(QWidget):

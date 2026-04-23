@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtGui import QImage
 
-from doc_capture_proto.core.clipboard_store import ClipboardItem, ClipboardStore
+from core.clipboard_store import ClipboardItem, ClipboardStore
 
 
 class ProjectStore:
