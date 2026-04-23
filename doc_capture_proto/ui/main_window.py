@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeySequence
+from PySide6.QtGui import QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
     QGridLayout,
@@ -55,6 +55,9 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle('Prep_Crab™ ver 0.1')
+        icon_path = Path(__file__).resolve().parents[1] / 'resources' / 'app_icon.ico'
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
         self.resize(1600, 950)
 
         self.loader = DocumentLoader()
