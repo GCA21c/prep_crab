@@ -28,6 +28,7 @@ class DocumentLoader:
         self.doc_index: int = -1
         self.page_index: int = 0
         self._last_word_error: str = ''
+        self._last_hwp_error: str = ''
         self._progress_callback: Callable[[str], None] | None = None
         self._temp_dir = Path(tempfile.mkdtemp(prefix='doc_capture_source_'))
         try:
@@ -177,44 +178,58 @@ class DocumentLoader:
             self._progress_callback(message)
 
     def _open_hwp_family(self, src: Path) -> LoadedDocument:
-        pdf_doc = self._open_hwp_via_pdf_bridge(src)
-        if pdf_doc is None:
-            pdf_doc = self._open_hwp_via_pyhwpx_bridge(src)
+        self._last_hwp_error = ''
+        self._notify_progress(f'한글(HWP)로 렌더링 중...\n{src.name}')
+        pdf_doc = self._open_hwp_via_pyhwpx_bridge(src)
         if pdf_doc is not None:
             return LoadedDocument(src, pdf_doc, src.suffix.lower().lstrip('.'))
-        fallback_pages = self._render_hwp_text_fallback(src)
-        if fallback_pages:
-            return LoadedDocument(src, None, src.suffix.lower().lstrip('.'), fallback_pages=fallback_pages)
-        raise RuntimeError('HWP/HWPX를 읽지 못했습니다. simple-hwp2pdf, pyhwpx(한/글 설치), helper-hwp/pyhwp 계열 fallback도 모두 실패했습니다.')
+        details = f'\n\n실패 원인: {self._last_hwp_error}' if self._last_hwp_error else ''
+        raise RuntimeError(
+            'HWP/HWPX는 정식 한글(Hancom HWP)이 설치된 Windows 환경에서만 지원합니다.\n'
+            '현재는 한글 자동화 PDF 변환에 실패했습니다.'
+            f'{details}'
+        )
 
 
     def _open_hwp_via_pyhwpx_bridge(self, src: Path) -> fitz.Document | None:
         try:
             from pyhwpx import Hwp  # type: ignore
-        except Exception:
+        except Exception as exc:
+            self._last_hwp_error = f'pyhwpx import 실패: {exc}'
             return None
         hwp = None
         out_pdf = self._temp_dir / f'{src.stem}_{len(self.loaded_documents)+1}_pyhwpx.pdf'
         try:
+            self._notify_progress(f'한글 자동화 연결 중...\n{src.name}')
             hwp = Hwp()
             if hasattr(hwp, 'open'):
                 hwp.open(str(src))
             elif hasattr(hwp, 'Open'):
                 hwp.Open(str(src))
             else:
+                self._last_hwp_error = 'pyhwpx 객체에 open/Open 메서드가 없습니다.'
                 return None
+            self._notify_progress(f'한글에서 문서 여는 중...\n{src.name}')
             if hasattr(hwp, 'save_pdf_as_image'):
+                self._notify_progress(f'PDF로 변환 중...\n{src.name}')
                 hwp.save_pdf_as_image(str(out_pdf))
             elif hasattr(hwp, 'save_as'):
                 try:
+                    self._notify_progress(f'PDF로 변환 중...\n{src.name}')
                     hwp.save_as(path=str(out_pdf), format='PDF')
                 except TypeError:
                     hwp.save_as(str(out_pdf), format='PDF')
             elif hasattr(hwp, 'SaveAs'):
+                self._notify_progress(f'PDF로 변환 중...\n{src.name}')
                 hwp.SaveAs(str(out_pdf), 'PDF')
-            if out_pdf.exists():
+            else:
+                self._last_hwp_error = 'pyhwpx 객체에 PDF 저장 메서드가 없습니다.'
+                return None
+            if out_pdf.exists() and out_pdf.stat().st_size > 0:
                 return fitz.open(str(out_pdf))
-        except Exception:
+            self._last_hwp_error = '한글이 PDF 파일을 생성하지 않았습니다.'
+        except Exception as exc:
+            self._last_hwp_error = str(exc)
             return None
         finally:
             for name in ('quit', 'Quit', 'close', 'Close'):
