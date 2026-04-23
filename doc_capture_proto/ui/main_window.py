@@ -60,9 +60,9 @@ class PanelHeader(QWidget):
         layout.addWidget(self.title_label, 0)
         if info_label is not None:
             layout.addWidget(info_label, 0)
+        layout.addStretch(1)
         if trailing_widget is not None:
             layout.addWidget(trailing_widget, 0)
-        layout.addStretch(1)
 
     def set_active(self, active: bool) -> None:
         self.title_label.set_active(active)
@@ -74,10 +74,16 @@ class PanelControls(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
+        trailing_buttons: list[QPushButton] = []
         for button in buttons:
             button.setMinimumHeight(28)
-            layout.addWidget(button, 0)
+            if button.text().lower() == 'x':
+                trailing_buttons.append(button)
+            else:
+                layout.addWidget(button, 0)
         layout.addStretch(1)
+        for button in trailing_buttons:
+            layout.addWidget(button, 0)
 
 
 class MainWindow(QMainWindow):
@@ -150,6 +156,18 @@ class MainWindow(QMainWindow):
         self.btn_save = QPushButton('SET Save')
         self.btn_reset = QPushButton('새로고침')
         self.btn_pdf = QPushButton('PDF OUTPUT')
+        self.btn_pdf.setStyleSheet(
+            'QPushButton {'
+            'background:#f4d03f;'
+            'color:#111111;'
+            'border:1px solid #c9a512;'
+            'border-radius:4px;'
+            'font-weight:700;'
+            'padding:4px 10px;'
+            '}'
+            'QPushButton:hover {background:#f7dc6f;}'
+            'QPushButton:pressed {background:#d4ac0d;}'
+        )
 
         for w in [
             self.btn_load_set, self.btn_load_doc, self.btn_save, self.btn_reset, self.btn_pdf,

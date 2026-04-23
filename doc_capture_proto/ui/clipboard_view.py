@@ -102,7 +102,7 @@ ORIGIN
  - Space+드래그 / 휠클릭 드래그: grab 이동
  - 캡쳐박스 더블클릭 또는 capture 버튼: 캡쳐
 
-CLIPBOARD
+CAPTURE BLOCKS
  - 마우스 휠: 저장 이미지 순환
  - 리스트 더블클릭: 항목 이름 변경
  - Delete: 항목 삭제
@@ -175,8 +175,12 @@ HERE
         self._passive_selection = passive
         try:
             if 0 <= index < len(self.store.items):
+                self.store.set_current(index)
                 self.list_widget.setCurrentRow(index)
+                current = self.store.current()
+                self.saved_preview.set_image(current.image if current else None, index)
             else:
+                self.store.set_current(-1)
                 self.list_widget.clearSelection()
                 self.saved_preview.set_image(None, -1)
         finally:
