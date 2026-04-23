@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import re
-import shutil
-import subprocess
 import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
@@ -80,28 +78,12 @@ class DocumentLoader:
 
     def _open_word_family(self, src: Path) -> LoadedDocument:
         pdf_doc = self._open_word_via_pdf_bridge(src)
-        if pdf_doc is None:
-            pdf_doc = self._open_word_via_libreoffice_pdf_bridge(src)
         if pdf_doc is not None:
             return LoadedDocument(src, pdf_doc, src.suffix.lower().lstrip('.'))
-        if src.suffix.lower() == '.docx':
-            page_layouts = self._extract_docx_page_layouts(src)
-            if page_layouts:
-                return LoadedDocument(
-                    src,
-                    None,
-                    src.suffix.lower().lstrip('.'),
-                    fallback_pages=self._render_docx_layout_pages(page_layouts, title=src.name),
-                )
-            text = self._extract_docx_text(src)
-        else:
-            text = self._extract_doc_text(src)
-        if not text.strip():
-            if src.suffix.lower() == '.doc':
-                text = self._build_unreadable_doc_notice(src)
-            else:
-                raise RuntimeError('DOC/DOCX에서 표시 가능한 내용을 읽지 못했습니다. Word COM PDF 변환 또는 읽기 전용 preview 경로 모두 실패했습니다.')
-        return LoadedDocument(src, None, src.suffix.lower().lstrip('.'), fallback_pages=self._text_to_pages(text, title=src.name))
+        raise RuntimeError(
+            'DOC/DOCX는 Microsoft Word가 설치된 Windows 환경에서만 지원합니다.\n'
+            '현재는 Word COM PDF 변환에 실패했습니다.'
+        )
 
 
     def _open_word_via_pdf_bridge(self, src: Path) -> fitz.Document | None:
@@ -140,35 +122,6 @@ class DocumentLoader:
             except Exception:
                 pass
         return None
-
-    def _open_word_via_libreoffice_pdf_bridge(self, src: Path) -> fitz.Document | None:
-        soffice = shutil.which('soffice')
-        if soffice is None:
-            return None
-        out_dir = self._temp_dir / f'libreoffice_pdf_{len(self.loaded_documents) + 1}'
-        out_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            result = subprocess.run(
-                [soffice, '--headless', '--convert-to', 'pdf', '--outdir', str(out_dir), str(src)],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                check=False,
-            )
-        except Exception:
-            return None
-        if result.returncode != 0:
-            return None
-        out_pdf = out_dir / f'{src.stem}.pdf'
-        if not out_pdf.exists():
-            candidates = sorted(out_dir.glob('*.pdf'))
-            if not candidates:
-                return None
-            out_pdf = candidates[0]
-        try:
-            return fitz.open(str(out_pdf))
-        except Exception:
-            return None
 
     def _open_hwp_family(self, src: Path) -> LoadedDocument:
         pdf_doc = self._open_hwp_via_pdf_bridge(src)
@@ -231,362 +184,6 @@ class DocumentLoader:
         except Exception:
             return None
         return None
-
-    def _extract_docx_text(self, src: Path) -> str:
-        page_texts = self._extract_docx_page_texts(src)
-        if page_texts:
-            return '\n\n'.join(page_texts)
-
-        try:
-            import mammoth  # type: ignore
-            with open(src, 'rb') as f:
-                result = mammoth.extract_raw_text(f)
-            text = result.value
-            if text and text.strip():
-                return text
-        except Exception:
-            pass
-
-        parts: list[str] = []
-        try:
-            from docx import Document  # type: ignore
-            doc = Document(str(src))
-            for p in doc.paragraphs:
-                if p.text.strip():
-                    parts.append(p.text)
-            for table in doc.tables:
-                for row in table.rows:
-                    row_cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-                    if row_cells:
-                        parts.append(' | '.join(row_cells))
-            if parts:
-                return '\n'.join(parts)
-        except Exception:
-            pass
-
-        try:
-            with zipfile.ZipFile(src, 'r') as zf:
-                data = zf.read('word/document.xml')
-            root = ET.fromstring(data)
-            ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
-            texts = [node.text for node in root.findall('.//w:t', ns) if node.text]
-            return '\n'.join(texts)
-        except Exception:
-            pass
-        return ''
-
-    def _extract_docx_page_layouts(self, src: Path) -> list[list[dict]]:
-        try:
-            with zipfile.ZipFile(src, 'r') as zf:
-                data = zf.read('word/document.xml')
-                footer_data = zf.read('word/footer1.xml') if 'word/footer1.xml' in zf.namelist() else b''
-        except Exception:
-            return []
-        try:
-            root = ET.fromstring(data)
-        except Exception:
-            return []
-
-        ns_uri = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
-        v_ns_uri = 'urn:schemas-microsoft-com:vml'
-        body = root.find(f'{{{ns_uri}}}body')
-        if body is None:
-            return []
-
-        pages: list[list[dict]] = [[]]
-        header_blocks = self._extract_docx_textboxes(root, ns_uri, v_ns_uri)
-        footer_blocks: list[dict] = []
-        if footer_data:
-            try:
-                footer_root = ET.fromstring(footer_data)
-                footer_blocks = self._extract_docx_textboxes(footer_root, ns_uri, v_ns_uri)
-            except Exception:
-                footer_blocks = []
-
-        def append_paragraph(text: str, style: str = '', align: str = 'left') -> None:
-            cleaned = text.strip()
-            if cleaned:
-                pages[-1].append({
-                    'type': 'paragraph',
-                    'text': cleaned,
-                    'style': style,
-                    'align': align,
-                })
-
-        def new_page() -> None:
-            if pages[-1]:
-                pages.append([])
-
-        def paragraph_props(elem: ET.Element) -> tuple[str, str]:
-            style = ''
-            align = 'left'
-            ppr = elem.find(f'./{{{ns_uri}}}pPr')
-            if ppr is not None:
-                style_elem = ppr.find(f'./{{{ns_uri}}}pStyle')
-                if style_elem is not None:
-                    style = style_elem.attrib.get(f'{{{ns_uri}}}val', '')
-                jc_elem = ppr.find(f'./{{{ns_uri}}}jc')
-                if jc_elem is not None:
-                    align = jc_elem.attrib.get(f'{{{ns_uri}}}val', 'left')
-            return style, align
-
-        def paragraph_to_segments(elem: ET.Element) -> list[tuple[str, str]]:
-            segments: list[tuple[str, str]] = []
-            current_parts: list[str] = []
-
-            def flush_text() -> None:
-                if current_parts:
-                    segments.append(('text', ''.join(current_parts)))
-                    current_parts.clear()
-
-            for node in elem.iter():
-                tag = node.tag.rsplit('}', 1)[-1]
-                if tag == 't' and node.text:
-                    current_parts.append(node.text)
-                elif tag == 'tab':
-                    current_parts.append('\t')
-                elif tag in {'cr'}:
-                    current_parts.append('\n')
-                elif tag == 'br':
-                    br_type = node.attrib.get(f'{{{ns_uri}}}type', '')
-                    if br_type == 'page':
-                        flush_text()
-                        segments.append(('page_break', ''))
-                    else:
-                        current_parts.append('\n')
-                elif tag == 'lastRenderedPageBreak':
-                    flush_text()
-                    segments.append(('page_break', ''))
-
-            flush_text()
-            return segments
-
-        for child in body:
-            tag = child.tag.rsplit('}', 1)[-1]
-            if tag == 'p':
-                style, align = paragraph_props(child)
-                segments = paragraph_to_segments(child)
-                if not segments:
-                    continue
-                paragraph_parts: list[str] = []
-                for kind, value in segments:
-                    if kind == 'page_break':
-                        append_paragraph(''.join(paragraph_parts), style=style, align=align)
-                        paragraph_parts.clear()
-                        new_page()
-                    else:
-                        paragraph_parts.append(value)
-                append_paragraph(''.join(paragraph_parts), style=style, align=align)
-            elif tag == 'tbl':
-                rows: list[str] = []
-                table_rows: list[list[str]] = []
-                for tr in child.findall(f'./{{{ns_uri}}}tr'):
-                    cells: list[str] = []
-                    for tc in tr.findall(f'./{{{ns_uri}}}tc'):
-                        cell_parts: list[str] = []
-                        for p in tc.findall(f'./{{{ns_uri}}}p'):
-                            pieces = [value for kind, value in paragraph_to_segments(p) if kind == 'text' and value.strip()]
-                            if pieces:
-                                cell_parts.append(' '.join(piece.strip() for piece in pieces if piece.strip()))
-                        cell_text = ' '.join(part for part in cell_parts if part).strip()
-                        if cell_text:
-                            cells.append(cell_text)
-                    if cells:
-                        rows.append(' | '.join(cells))
-                        table_rows.append(cells)
-                if table_rows:
-                    pages[-1].append({
-                        'type': 'table',
-                        'rows': table_rows,
-                    })
-
-        normalized = [page for page in pages if page]
-        if header_blocks:
-            for page in normalized:
-                for box in reversed(header_blocks):
-                    page.insert(0, dict(box))
-        if footer_blocks:
-            for page_index, page in enumerate(normalized, start=1):
-                for box in footer_blocks:
-                    box_copy = dict(box)
-                    text = str(box_copy.get('text', ''))
-                    box_copy['text'] = re.sub(r'\b\d+\b', str(page_index), text) if re.search(r'\b\d+\b', text) else (f'{text} {page_index}'.strip() if text else str(page_index))
-                    page.append(box_copy)
-        return normalized
-
-    def _extract_docx_textboxes(self, root: ET.Element, ns_uri: str, v_ns_uri: str) -> list[dict]:
-        blocks: list[dict] = []
-        seen: set[tuple] = set()
-        for shape in root.findall(f'.//{{{v_ns_uri}}}shape'):
-            texts = [t.text for t in shape.findall(f'.//{{{ns_uri}}}t') if t.text and t.text.strip()]
-            if texts:
-                block_text = '\n'.join(texts).strip()
-                if block_text:
-                    box = self._docx_shape_to_box(shape, block_text)
-                    key = (
-                        box.get('text', ''),
-                        round(float(box.get('x_pt', 0.0)), 2),
-                        round(float(box.get('y_pt', 0.0)), 2),
-                        round(float(box.get('w_pt', 0.0)), 2),
-                        round(float(box.get('h_pt', 0.0)), 2),
-                        box.get('anchor', 'top'),
-                    )
-                    if key not in seen:
-                        blocks.append(box)
-                        seen.add(key)
-        for textbox in root.findall(f'.//{{{ns_uri}}}txbxContent'):
-            texts = [t.text for t in textbox.findall(f'.//{{{ns_uri}}}t') if t.text and t.text.strip()]
-            if texts:
-                block_text = '\n'.join(texts).strip()
-                if block_text:
-                    key = (block_text, 'txbx')
-                    if key not in seen:
-                        blocks.append({
-                            'type': 'textbox',
-                            'text': block_text,
-                            'anchor': 'top',
-                            'x_pt': 0.0,
-                            'y_pt': 0.0,
-                            'w_pt': 150.0,
-                            'h_pt': 80.0,
-                        })
-                        seen.add(key)
-        return blocks
-
-    def _docx_shape_to_box(self, shape: ET.Element, text: str) -> dict:
-        style = shape.attrib.get('style', '')
-        style_map = {}
-        for part in style.split(';'):
-            if ':' not in part:
-                continue
-            key, value = part.split(':', 1)
-            style_map[key.strip().lower()] = value.strip().lower()
-
-        def parse_measure(value: str, default: float = 0.0) -> float:
-            if not value:
-                return default
-            raw = value.strip().lower()
-            try:
-                if raw.endswith('pt'):
-                    return float(raw[:-2])
-                if raw.endswith('px'):
-                    return float(raw[:-2]) * 0.75
-                if raw.endswith('in'):
-                    return float(raw[:-2]) * 72.0
-                if raw.endswith('cm'):
-                    return float(raw[:-2]) * 28.3464567
-                if raw.endswith('mm'):
-                    return float(raw[:-2]) * 2.83464567
-                return float(raw) / 127.0
-            except Exception:
-                return default
-
-        anchor = 'bottom' if (
-            style_map.get('mso-position-vertical', '') == 'bottom'
-            or style_map.get('v-text-anchor', '') == 'bottom'
-        ) else 'top'
-        return {
-            'type': 'textbox',
-            'text': text,
-            'anchor': anchor,
-            'x_pt': parse_measure(style_map.get('margin-left', '0')),
-            'y_pt': parse_measure(style_map.get('top', style_map.get('margin-top', '0'))),
-            'w_pt': parse_measure(style_map.get('width', '150pt'), 150.0),
-            'h_pt': parse_measure(style_map.get('height', '80pt'), 80.0),
-        }
-
-    def _extract_docx_page_texts(self, src: Path) -> list[str]:
-        layouts = self._extract_docx_page_layouts(src)
-        page_texts: list[str] = []
-        for page in layouts:
-            lines: list[str] = []
-            for elem in page:
-                if elem.get('type') == 'paragraph':
-                    lines.append(elem.get('text', ''))
-                    lines.append('')
-                elif elem.get('type') == 'table':
-                    for row in elem.get('rows', []):
-                        lines.append(' | '.join(row))
-                    lines.append('')
-            text = '\n'.join(line for line in lines).strip()
-            if text:
-                page_texts.append(text)
-        return page_texts
-
-    def _extract_doc_text(self, src: Path) -> str:
-        text = self._extract_doc_text_via_com(src)
-        if text.strip():
-            return text
-
-        text = self._extract_doc_text_via_libreoffice(src)
-        if text.strip():
-            return text
-
-        text = self._extract_doc_text_via_external_tools(src)
-        if text.strip():
-            return text
-
-        try:
-            import textract  # type: ignore
-            raw = textract.process(str(src))
-            text = raw.decode('utf-8', errors='ignore') if isinstance(raw, bytes) else str(raw)
-            text = self._normalize_extracted_text(text)
-            if text.strip():
-                return text
-        except Exception:
-            pass
-
-        try:
-            import olefile  # type: ignore
-            if olefile.isOleFile(str(src)):
-                with olefile.OleFileIO(str(src)) as ole:
-                    chunks = []
-                    for stream_name in ole.listdir():
-                        try:
-                            data = ole.openstream(stream_name).read()
-                        except Exception:
-                            continue
-                        chunks.extend(self._extract_text_candidates_from_bytes(data))
-                    text = self._normalize_extracted_text('\n'.join(chunks))
-                    if text.strip():
-                        return text
-        except Exception:
-            pass
-        return ''
-
-    def _extract_doc_text_via_com(self, src: Path) -> str:
-        try:
-            import pythoncom  # type: ignore
-            import win32com.client  # type: ignore
-        except Exception:
-            return ''
-        doc = None
-        word = None
-        try:
-            pythoncom.CoInitialize()
-            word = win32com.client.DispatchEx('Word.Application')
-            word.Visible = False
-            word.DisplayAlerts = 0
-            doc = word.Documents.Open(str(src), ReadOnly=True)
-            text = doc.Content.Text
-            return text if isinstance(text, str) else ''
-        except Exception:
-            return ''
-        finally:
-            try:
-                if doc is not None:
-                    doc.Close(False)
-            except Exception:
-                pass
-            try:
-                if word is not None:
-                    word.Quit()
-            except Exception:
-                pass
-            try:
-                pythoncom.CoUninitialize()
-            except Exception:
-                pass
 
     def _render_hwp_text_fallback(self, src: Path) -> list[QImage]:
         ext = src.suffix.lower()
@@ -662,277 +259,6 @@ class DocumentLoader:
             pass
         return ''
 
-    def _extract_doc_text_via_libreoffice(self, src: Path) -> str:
-        soffice = shutil.which('soffice')
-        if soffice is None:
-            return ''
-        out_dir = self._temp_dir / f'libreoffice_txt_{len(self.loaded_documents) + 1}'
-        out_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            result = subprocess.run(
-                [soffice, '--headless', '--convert-to', 'txt:Text', '--outdir', str(out_dir), str(src)],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                check=False,
-            )
-        except Exception:
-            return ''
-        if result.returncode != 0:
-            return ''
-        out_txt = out_dir / f'{src.stem}.txt'
-        if not out_txt.exists():
-            candidates = sorted(out_dir.glob('*.txt'))
-            if not candidates:
-                return ''
-            out_txt = candidates[0]
-        try:
-            return self._normalize_extracted_text(out_txt.read_text(encoding='utf-8', errors='ignore'))
-        except Exception:
-            return ''
-
-    def _extract_doc_text_via_external_tools(self, src: Path) -> str:
-        for tool in ('antiword', 'catdoc', 'wvText'):
-            exe = shutil.which(tool)
-            if exe is None:
-                continue
-            try:
-                result = subprocess.run(
-                    [exe, str(src)],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    check=False,
-                )
-            except Exception:
-                continue
-            output = self._normalize_extracted_text((result.stdout or '') + '\n' + (result.stderr or ''))
-            if output.strip():
-                return output
-        return ''
-
-    def _extract_text_candidates_from_bytes(self, data: bytes) -> list[str]:
-        results: list[str] = []
-        for encoding in ('utf-16-le', 'utf-8', 'cp949', 'utf-16-be', 'latin1'):
-            try:
-                decoded = data.decode(encoding, errors='ignore')
-            except Exception:
-                continue
-            cleaned = decoded.replace('\x00', '')
-            cleaned = re.sub(r'[\t\r\f\v]+', ' ', cleaned)
-            cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
-            cleaned = re.sub(r'[^\w가-힣\s\-_,.:;()\[\]/%+*&@!?]', ' ', cleaned)
-            cleaned = re.sub(r' {2,}', ' ', cleaned)
-            lines = [line.strip() for line in cleaned.splitlines()]
-            useful = [line for line in lines if len(re.sub(r'\W+', '', line)) >= 3]
-            if useful:
-                results.extend(useful[:200])
-        uniq: list[str] = []
-        seen = set()
-        for item in results:
-            key = item.strip()
-            if key and key not in seen:
-                uniq.append(key)
-                seen.add(key)
-        return uniq
-
-    def _normalize_extracted_text(self, text: str) -> str:
-        cleaned = text.replace('\x00', '')
-        cleaned = cleaned.replace('\r\n', '\n').replace('\r', '\n')
-        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
-        cleaned = re.sub(r'[ \t]{2,}', ' ', cleaned)
-        lines = [line.strip() for line in cleaned.splitlines()]
-        useful = [line for line in lines if len(re.sub(r'\W+', '', line)) >= 2]
-        return '\n'.join(useful).strip()
-
-    def _build_unreadable_doc_notice(self, src: Path) -> str:
-        return '\n'.join([
-            'DOC preview fallback',
-            '',
-            '이 DOC 파일은 현재 환경에서 본문 텍스트를 직접 추출하지 못했습니다.',
-            '가능한 경로: Word COM, LibreOffice, antiword/catdoc/wvText, textract, olefile raw fallback.',
-            '',
-            f'파일명: {src.name}',
-            '',
-            'Windows 환경에서 정확도를 높이려면:',
-            '- Microsoft Word 설치 후 COM 경로 사용',
-            '- 또는 LibreOffice 설치 후 headless 변환 경로 사용',
-            '- 또는 antiword / catdoc 같은 오픈소스 추출기 설치',
-        ])
-
-    def _extract_hwpx_text(self, src: Path) -> str:
-        texts: list[str] = []
-        with zipfile.ZipFile(src, 'r') as zf:
-            xml_names = [n for n in zf.namelist() if n.lower().endswith('.xml')]
-            for name in sorted(xml_names):
-                if 'section' not in name.lower() and 'contents' not in name.lower() and 'body' not in name.lower():
-                    continue
-                try:
-                    data = zf.read(name)
-                    root = ET.fromstring(data)
-                except Exception:
-                    continue
-                for elem in root.iter():
-                    if elem.text and elem.text.strip():
-                        texts.append(elem.text.strip())
-        return '\n'.join(texts)
-
-    def _text_to_pages(self, text: str, title: str = '') -> list[QImage]:
-        return self._text_blocks_to_pages([text], title=title)
-
-    def _text_blocks_to_pages(self, blocks: list[str], title: str = '') -> list[QImage]:
-        page_size = (1240, 1754)
-        margin = 70
-        pages: list[QImage] = []
-        max_lines = 48
-        for page_index, block in enumerate(blocks):
-            lines = block.splitlines() or ['']
-            batch: list[str] = []
-            if title and page_index == 0:
-                lines = [title, '', *lines]
-            for line in lines:
-                batch.append(line)
-                if len(batch) >= max_lines:
-                    pages.append(self._render_text_page('\n'.join(batch), page_size, margin))
-                    batch = []
-            if batch:
-                pages.append(self._render_text_page('\n'.join(batch), page_size, margin))
-        return pages or [self._render_text_page('(빈 문서)', page_size, margin)]
-
-    def _render_text_page(self, text: str, page_size: tuple[int, int], margin: int) -> QImage:
-        image = QImage(page_size[0], page_size[1], QImage.Format_ARGB32)
-        image.fill(Qt.white)
-        painter = QPainter(image)
-        painter.setPen(QColor(Qt.black))
-        font = QFont('Malgun Gothic')
-        font.setPointSize(12)
-        painter.setFont(font)
-        plain = text.replace('\r\n', '\n').replace('\r', '\n')
-        text_rect = QRectF(
-            float(margin),
-            float(margin),
-            float(page_size[0] - margin * 2),
-            float(page_size[1] - margin * 2),
-        )
-        painter.drawText(
-            text_rect,
-            int(Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap | Qt.TextExpandTabs),
-            plain,
-        )
-        painter.end()
-        return image
-
-    def _render_docx_layout_pages(self, layouts: list[list[dict]], title: str = '') -> list[QImage]:
-        page_size = (1240, 1754)
-        margin = 70
-        pages = [
-            self._render_docx_layout_page(layout, page_size, margin, title if index == 0 else '')
-            for index, layout in enumerate(layouts)
-        ]
-        return pages or [self._render_text_page('(빈 문서)', page_size, margin)]
-
-    def _render_docx_layout_page(self, layout: list[dict], page_size: tuple[int, int], margin: int, title: str = '') -> QImage:
-        image = QImage(page_size[0], page_size[1], QImage.Format_ARGB32)
-        image.fill(Qt.white)
-        painter = QPainter(image)
-        painter.setRenderHint(QPainter.TextAntialiasing, True)
-        painter.setPen(QColor(Qt.black))
-
-        content_x = float(margin)
-        content_y = float(margin)
-        content_w = float(page_size[0] - margin * 2)
-        content_h = float(page_size[1] - margin * 2)
-
-        body_font = QFont('Malgun Gothic', 12)
-        heading_font = QFont('Malgun Gothic', 14)
-        heading_font.setBold(True)
-        title_font = QFont('Malgun Gothic', 13)
-        title_font.setBold(True)
-        table_font = QFont('Malgun Gothic', 11)
-
-        if title:
-            painter.setFont(title_font)
-            title_rect = QRectF(content_x, content_y, content_w, 28.0)
-            painter.drawText(title_rect, int(Qt.AlignLeft | Qt.AlignTop), title)
-            content_y += 40.0
-
-        for elem in layout:
-            elem_type = elem.get('type')
-            if elem_type == 'paragraph':
-                style = str(elem.get('style', '')).lower()
-                align_value = str(elem.get('align', 'left')).lower()
-                font = heading_font if 'heading' in style or 'title' in style or 'subtitle' in style else body_font
-                painter.setFont(font)
-                metrics = painter.fontMetrics()
-                flags = int(Qt.TextWordWrap | Qt.AlignTop)
-                if align_value == 'center':
-                    flags |= int(Qt.AlignHCenter)
-                elif align_value == 'right':
-                    flags |= int(Qt.AlignRight)
-                else:
-                    flags |= int(Qt.AlignLeft)
-                probe = metrics.boundingRect(
-                    QRectF(content_x, content_y, content_w, content_h).toRect(),
-                    flags,
-                    elem.get('text', ''),
-                )
-                draw_h = max(float(probe.height()), float(metrics.height()))
-                painter.drawText(QRectF(content_x, content_y, content_w, draw_h + 4.0), flags, elem.get('text', ''))
-                content_y += draw_h + (20.0 if font is heading_font else 14.0)
-            elif elem_type == 'table':
-                rows = elem.get('rows', [])
-                if not rows:
-                    continue
-                col_count = max(len(row) for row in rows)
-                if col_count <= 0:
-                    continue
-                painter.setFont(table_font)
-                metrics = painter.fontMetrics()
-                col_w = content_w / float(col_count)
-                for row in rows:
-                    cell_rects: list[QRectF] = []
-                    row_h = 0.0
-                    for col_idx in range(col_count):
-                        text = row[col_idx] if col_idx < len(row) else ''
-                        cell_rect = QRectF(content_x + col_idx * col_w, content_y, col_w, 1.0)
-                        probe = metrics.boundingRect(cell_rect.toRect().adjusted(6, 6, -6, -6), int(Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop), text)
-                        cell_h = max(float(probe.height()) + 16.0, float(metrics.height()) + 16.0)
-                        row_h = max(row_h, cell_h)
-                        cell_rects.append(cell_rect)
-                    for col_idx, cell_rect in enumerate(cell_rects):
-                        final_rect = QRectF(cell_rect.x(), content_y, col_w, row_h)
-                        painter.setPen(QColor('#808080'))
-                        painter.drawRect(final_rect)
-                        painter.setPen(QColor(Qt.black))
-                        text = row[col_idx] if col_idx < len(row) else ''
-                        painter.drawText(final_rect.adjusted(6, 6, -6, -6), int(Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop), text)
-                    content_y += row_h
-                content_y += 18.0
-            elif elem_type == 'textbox':
-                text = elem.get('text', '')
-                anchor = elem.get('anchor', 'top')
-                painter.setFont(body_font)
-                metrics = painter.fontMetrics()
-                flags = int(Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop)
-                pt_to_px_x = float(page_size[0]) / 595.0
-                pt_to_px_y = float(page_size[1]) / 842.0
-                x = content_x + float(elem.get('x_pt', 0.0)) * pt_to_px_x
-                box_w = max(120.0, float(elem.get('w_pt', 150.0)) * pt_to_px_x)
-                box_h = max(36.0, float(elem.get('h_pt', 80.0)) * pt_to_px_y)
-                if anchor == 'bottom':
-                    y = float(page_size[1] - margin) - box_h - float(elem.get('y_pt', 0.0)) * pt_to_px_y
-                else:
-                    y = content_y + float(elem.get('y_pt', 0.0)) * pt_to_px_y
-                box_rect = QRectF(x, y, min(box_w, content_x + content_w - x), box_h)
-                painter.setPen(QColor('#6f6f6f' if anchor == 'top' else '#8a8a8a'))
-                painter.drawRect(box_rect)
-                painter.setPen(QColor(Qt.black))
-                painter.drawText(box_rect.adjusted(6, 6, -6, -6), flags, text)
-                if anchor == 'top':
-                    content_y = max(content_y, y + box_h + 10.0)
-
-        painter.end()
-        return image
 
     def document_count(self) -> int:
         return len(self.loaded_documents)
@@ -1023,4 +349,91 @@ class DocumentLoader:
         pix = page.get_pixmap(matrix=fitz.Matrix(output_scale, output_scale), clip=clip, alpha=False)
         fmt = QImage.Format_RGB888
         image = QImage(pix.samples, pix.width, pix.height, pix.stride, fmt).copy()
+        return image
+
+    def _extract_hwpx_text(self, src: Path) -> str:
+        texts: list[str] = []
+        with zipfile.ZipFile(src, 'r') as zf:
+            xml_names = [name for name in zf.namelist() if name.lower().endswith('.xml')]
+            for name in sorted(xml_names):
+                lower_name = name.lower()
+                if 'section' not in lower_name and 'contents' not in lower_name and 'body' not in lower_name:
+                    continue
+                try:
+                    root = ET.fromstring(zf.read(name))
+                except Exception:
+                    continue
+                for elem in root.iter():
+                    if elem.text and elem.text.strip():
+                        texts.append(elem.text.strip())
+        return '\n'.join(texts)
+
+    def _extract_text_candidates_from_bytes(self, data: bytes) -> list[str]:
+        results: list[str] = []
+        for encoding in ('utf-16-le', 'utf-8', 'cp949', 'utf-16-be', 'latin1'):
+            try:
+                decoded = data.decode(encoding, errors='ignore')
+            except Exception:
+                continue
+            cleaned = decoded.replace('\x00', '')
+            cleaned = re.sub(r'[\t\r\f\v]+', ' ', cleaned)
+            cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+            cleaned = re.sub(r'[^\w가-힣\s\-_,.:;()\[\]/%+*&@!?]', ' ', cleaned)
+            cleaned = re.sub(r' {2,}', ' ', cleaned)
+            lines = [line.strip() for line in cleaned.splitlines()]
+            useful = [line for line in lines if len(re.sub(r'\W+', '', line)) >= 3]
+            if useful:
+                results.extend(useful[:200])
+        unique: list[str] = []
+        seen: set[str] = set()
+        for item in results:
+            key = item.strip()
+            if key and key not in seen:
+                unique.append(key)
+                seen.add(key)
+        return unique
+
+    def _text_to_pages(self, text: str, title: str = '') -> list[QImage]:
+        return self._text_blocks_to_pages([text], title=title)
+
+    def _text_blocks_to_pages(self, blocks: list[str], title: str = '') -> list[QImage]:
+        page_size = (1240, 1754)
+        margin = 70
+        pages: list[QImage] = []
+        max_lines = 48
+        for page_index, block in enumerate(blocks):
+            lines = block.splitlines() or ['']
+            batch: list[str] = []
+            if title and page_index == 0:
+                lines = [title, '', *lines]
+            for line in lines:
+                batch.append(line)
+                if len(batch) >= max_lines:
+                    pages.append(self._render_text_page('\n'.join(batch), page_size, margin))
+                    batch = []
+            if batch:
+                pages.append(self._render_text_page('\n'.join(batch), page_size, margin))
+        return pages or [self._render_text_page('(빈 문서)', page_size, margin)]
+
+    def _render_text_page(self, text: str, page_size: tuple[int, int], margin: int) -> QImage:
+        image = QImage(page_size[0], page_size[1], QImage.Format_ARGB32)
+        image.fill(Qt.white)
+        painter = QPainter(image)
+        painter.setPen(QColor(Qt.black))
+        font = QFont('Malgun Gothic')
+        font.setPointSize(12)
+        painter.setFont(font)
+        plain = text.replace('\r\n', '\n').replace('\r', '\n')
+        text_rect = QRectF(
+            float(margin),
+            float(margin),
+            float(page_size[0] - margin * 2),
+            float(page_size[1] - margin * 2),
+        )
+        painter.drawText(
+            text_rect,
+            int(Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap | Qt.TextExpandTabs),
+            plain,
+        )
+        painter.end()
         return image
