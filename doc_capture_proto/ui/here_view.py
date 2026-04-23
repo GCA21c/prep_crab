@@ -34,6 +34,7 @@ class HereView(QWidget):
         self.default_pan = QPointF(0, 0)
         self.scene_size = (1400, 1800)
         self.resizing_block = False
+        self.resize_mode: str | None = None
         self.dragging_block = False
         self.pending_drag_image: QImage | None = None
         self.pending_drag_source_index: int = -1
@@ -232,10 +233,30 @@ class HereView(QWidget):
         page_rect = self._page_rect_view()
         return QRectF(page_rect.x() + block['x'] * self.zoom, page_rect.y() + block['y'] * self.zoom, block['w'] * self.zoom, block['h'] * self.zoom)
 
-    def _resize_handle_rect(self, block: dict) -> QRectF:
+    def _resize_handle_visual_rect(self, block: dict, handle: str) -> QRectF:
         rect = self._block_rect_view(block)
-        handle = max(4.5, min(8.0, 6.0 * self.zoom))
-        return QRectF(rect.right() - handle, rect.bottom() - handle, handle, handle)
+        dot_size = 8.0
+        half = dot_size / 2.0
+        if handle == 'corner':
+            center = QPointF(rect.right(), rect.bottom())
+        elif handle == 'right':
+            center = QPointF(rect.right(), rect.center().y())
+        else:
+            center = QPointF(rect.center().x(), rect.bottom())
+        return QRectF(center.x() - half, center.y() - half, dot_size, dot_size)
+
+    def _resize_handle_hit_rect(self, block: dict, handle: str) -> QRectF:
+        visual = self._resize_handle_visual_rect(block, handle)
+        center = visual.center()
+        hit_size = 14.0
+        half = hit_size / 2.0
+        return QRectF(center.x() - half, center.y() - half, hit_size, hit_size)
+
+    def _resize_handle_at(self, block: dict, pos: QPointF) -> str | None:
+        for handle in ('corner', 'right', 'bottom'):
+            if self._resize_handle_hit_rect(block, handle).contains(pos):
+                return handle
+        return None
 
     def _view_to_scene(self, pos: QPointF) -> QPointF:
         return QPointF((pos.x() + self.pan.x()) / self.zoom, (pos.y() + self.pan.y()) / self.zoom)
@@ -326,11 +347,18 @@ class HereView(QWidget):
         self.selected_index = -1
         for i in reversed(range(len(self.blocks))):
             block = self.blocks[i]
-            if self._resize_handle_rect(block).contains(pos):
+            handle = self._resize_handle_at(block, pos)
+            if handle is not None:
                 self.selected_index = i
                 self.resizing_block = True
+                self.resize_mode = handle
                 self.history_checkpoint_requested.emit()
-                self.setCursor(Qt.SizeFDiagCursor)
+                if handle == 'right':
+                    self.setCursor(Qt.SizeHorCursor)
+                elif handle == 'bottom':
+                    self.setCursor(Qt.SizeVerCursor)
+                else:
+                    self.setCursor(Qt.SizeFDiagCursor)
                 self._emit_selected_clipboard_index()
                 self.update()
                 return
@@ -357,8 +385,21 @@ class HereView(QWidget):
             return
         block = self.blocks[self.selected_index]
         if self.resizing_block and (event.buttons() & Qt.LeftButton):
-            block['w'] = max(24.0, float(block['w']) + delta.x() / self.zoom)
-            block['h'] = max(24.0, float(block['h']) + delta.y() / self.zoom)
+            min_size = 24.0
+            if self.resize_mode == 'right':
+                block['w'] = max(min_size, float(block['w']) + delta.x() / self.zoom)
+            elif self.resize_mode == 'bottom':
+                block['h'] = max(min_size, float(block['h']) + delta.y() / self.zoom)
+            else:
+                original_w = max(1.0, float(block.get('original_w', block['image'].width())))
+                original_h = max(1.0, float(block.get('original_h', block['image'].height())))
+                aspect_ratio = original_h / original_w
+                width_by_dx = float(block['w']) + delta.x() / self.zoom
+                height_by_dy = float(block['h']) + delta.y() / self.zoom
+                target_w = max(width_by_dx, height_by_dy / aspect_ratio)
+                target_w = max(min_size, target_w)
+                block['w'] = target_w
+                block['h'] = max(min_size, target_w * aspect_ratio)
             self.drag_last = pos
             self.update()
             return
@@ -370,7 +411,12 @@ class HereView(QWidget):
             self._save_current_view_state()
             self.update()
             return
-        if self._resize_handle_rect(block).contains(pos):
+        handle = self._resize_handle_at(block, pos)
+        if handle == 'right':
+            self.setCursor(Qt.SizeHorCursor)
+        elif handle == 'bottom':
+            self.setCursor(Qt.SizeVerCursor)
+        elif handle == 'corner':
             self.setCursor(Qt.SizeFDiagCursor)
         elif self._block_rect_view(block).contains(pos):
             self.setCursor(Qt.SizeAllCursor)
@@ -384,6 +430,7 @@ class HereView(QWidget):
         self.middle_panning = False
         self.dragging_block = False
         self.resizing_block = False
+        self.resize_mode = None
         self._clear_guides()
         if self.space_pressed:
             self.setCursor(Qt.OpenHandCursor)
@@ -539,4 +586,7 @@ class HereView(QWidget):
                 shadow_color = QColor(120, 120, 120, 150)
                 painter.fillRect(QRectF(rect.right() + 1, rect.top() + 3, 3, max(0.0, rect.height() - 1)), shadow_color)
                 painter.fillRect(QRectF(rect.left() + 3, rect.bottom() + 1, max(0.0, rect.width() - 1), 3), shadow_color)
-                painter.fillRect(self._resize_handle_rect(block), QColor('#7f7f7f'))
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QColor('#d12c2c'))
+                for handle in ('corner', 'right', 'bottom'):
+                    painter.drawEllipse(self._resize_handle_visual_rect(block, handle))
