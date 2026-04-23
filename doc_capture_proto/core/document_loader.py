@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
@@ -78,6 +80,8 @@ class DocumentLoader:
 
     def _open_word_family(self, src: Path) -> LoadedDocument:
         pdf_doc = self._open_word_via_pdf_bridge(src)
+        if pdf_doc is None:
+            pdf_doc = self._open_word_via_libreoffice_pdf_bridge(src)
         if pdf_doc is not None:
             return LoadedDocument(src, pdf_doc, src.suffix.lower().lstrip('.'))
         text = ''
@@ -86,7 +90,10 @@ class DocumentLoader:
         else:
             text = self._extract_doc_text(src)
         if not text.strip():
-            raise RuntimeError('DOC/DOCX에서 표시 가능한 내용을 읽지 못했습니다. Word COM PDF 변환 또는 읽기 전용 preview 경로 모두 실패했습니다.')
+            if src.suffix.lower() == '.doc':
+                text = self._build_unreadable_doc_notice(src)
+            else:
+                raise RuntimeError('DOC/DOCX에서 표시 가능한 내용을 읽지 못했습니다. Word COM PDF 변환 또는 읽기 전용 preview 경로 모두 실패했습니다.')
         return LoadedDocument(src, None, src.suffix.lower().lstrip('.'), fallback_pages=self._text_to_pages(text, title=src.name))
 
 
@@ -126,6 +133,35 @@ class DocumentLoader:
             except Exception:
                 pass
         return None
+
+    def _open_word_via_libreoffice_pdf_bridge(self, src: Path) -> fitz.Document | None:
+        soffice = shutil.which('soffice')
+        if soffice is None:
+            return None
+        out_dir = self._temp_dir / f'libreoffice_pdf_{len(self.loaded_documents) + 1}'
+        out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            result = subprocess.run(
+                [soffice, '--headless', '--convert-to', 'pdf', '--outdir', str(out_dir), str(src)],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        out_pdf = out_dir / f'{src.stem}.pdf'
+        if not out_pdf.exists():
+            candidates = sorted(out_dir.glob('*.pdf'))
+            if not candidates:
+                return None
+            out_pdf = candidates[0]
+        try:
+            return fitz.open(str(out_pdf))
+        except Exception:
+            return None
 
     def _open_hwp_family(self, src: Path) -> LoadedDocument:
         pdf_doc = self._open_hwp_via_pdf_bridge(src)
@@ -233,10 +269,19 @@ class DocumentLoader:
         if text.strip():
             return text
 
+        text = self._extract_doc_text_via_libreoffice(src)
+        if text.strip():
+            return text
+
+        text = self._extract_doc_text_via_external_tools(src)
+        if text.strip():
+            return text
+
         try:
             import textract  # type: ignore
             raw = textract.process(str(src))
             text = raw.decode('utf-8', errors='ignore') if isinstance(raw, bytes) else str(raw)
+            text = self._normalize_extracted_text(text)
             if text.strip():
                 return text
         except Exception:
@@ -253,7 +298,7 @@ class DocumentLoader:
                         except Exception:
                             continue
                         chunks.extend(self._extract_text_candidates_from_bytes(data))
-                    text = '\n'.join(chunks)
+                    text = self._normalize_extracted_text('\n'.join(chunks))
                     if text.strip():
                         return text
         except Exception:
@@ -368,6 +413,55 @@ class DocumentLoader:
             pass
         return ''
 
+    def _extract_doc_text_via_libreoffice(self, src: Path) -> str:
+        soffice = shutil.which('soffice')
+        if soffice is None:
+            return ''
+        out_dir = self._temp_dir / f'libreoffice_txt_{len(self.loaded_documents) + 1}'
+        out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            result = subprocess.run(
+                [soffice, '--headless', '--convert-to', 'txt:Text', '--outdir', str(out_dir), str(src)],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+        except Exception:
+            return ''
+        if result.returncode != 0:
+            return ''
+        out_txt = out_dir / f'{src.stem}.txt'
+        if not out_txt.exists():
+            candidates = sorted(out_dir.glob('*.txt'))
+            if not candidates:
+                return ''
+            out_txt = candidates[0]
+        try:
+            return self._normalize_extracted_text(out_txt.read_text(encoding='utf-8', errors='ignore'))
+        except Exception:
+            return ''
+
+    def _extract_doc_text_via_external_tools(self, src: Path) -> str:
+        for tool in ('antiword', 'catdoc', 'wvText'):
+            exe = shutil.which(tool)
+            if exe is None:
+                continue
+            try:
+                result = subprocess.run(
+                    [exe, str(src)],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                )
+            except Exception:
+                continue
+            output = self._normalize_extracted_text((result.stdout or '') + '\n' + (result.stderr or ''))
+            if output.strip():
+                return output
+        return ''
+
     def _extract_text_candidates_from_bytes(self, data: bytes) -> list[str]:
         results: list[str] = []
         for encoding in ('utf-16-le', 'utf-8', 'cp949', 'utf-16-be', 'latin1'):
@@ -392,6 +486,30 @@ class DocumentLoader:
                 uniq.append(key)
                 seen.add(key)
         return uniq
+
+    def _normalize_extracted_text(self, text: str) -> str:
+        cleaned = text.replace('\x00', '')
+        cleaned = cleaned.replace('\r\n', '\n').replace('\r', '\n')
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        cleaned = re.sub(r'[ \t]{2,}', ' ', cleaned)
+        lines = [line.strip() for line in cleaned.splitlines()]
+        useful = [line for line in lines if len(re.sub(r'\W+', '', line)) >= 2]
+        return '\n'.join(useful).strip()
+
+    def _build_unreadable_doc_notice(self, src: Path) -> str:
+        return '\n'.join([
+            'DOC preview fallback',
+            '',
+            '이 DOC 파일은 현재 환경에서 본문 텍스트를 직접 추출하지 못했습니다.',
+            '가능한 경로: Word COM, LibreOffice, antiword/catdoc/wvText, textract, olefile raw fallback.',
+            '',
+            f'파일명: {src.name}',
+            '',
+            'Windows 환경에서 정확도를 높이려면:',
+            '- Microsoft Word 설치 후 COM 경로 사용',
+            '- 또는 LibreOffice 설치 후 headless 변환 경로 사용',
+            '- 또는 antiword / catdoc 같은 오픈소스 추출기 설치',
+        ])
 
     def _extract_hwpx_text(self, src: Path) -> str:
         texts: list[str] = []
