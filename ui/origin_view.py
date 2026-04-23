@@ -79,9 +79,9 @@ class OriginView(QWidget):
         return (int(self.loader.doc_index), int(self.loader.page_index))
 
     def _save_current_view_state(self) -> None:
-        key = self._last_view_key if self._last_view_key is not None else self._current_view_key()
-        if key is None:
+        if self._last_view_key is None:
             return
+        key = self._last_view_key
         self.page_view_states[key] = {
             'view_scale': float(self.view_scale),
             'pan_x': float(self.pan.x()),

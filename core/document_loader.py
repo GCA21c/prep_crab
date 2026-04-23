@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import re
 import tempfile
 import zipfile
@@ -192,6 +194,7 @@ class DocumentLoader:
 
 
     def _open_hwp_via_pyhwpx_bridge(self, src: Path) -> fitz.Document | None:
+        logs_text = ''
         try:
             from pyhwpx import Hwp  # type: ignore
         except Exception as exc:
@@ -200,36 +203,53 @@ class DocumentLoader:
         hwp = None
         out_pdf = self._temp_dir / f'{src.stem}_{len(self.loaded_documents)+1}_pyhwpx.pdf'
         try:
-            self._notify_progress(f'한글 자동화 연결 중...\n{src.name}')
-            hwp = Hwp()
-            if hasattr(hwp, 'open'):
-                hwp.open(str(src))
-            elif hasattr(hwp, 'Open'):
-                hwp.Open(str(src))
-            else:
-                self._last_hwp_error = 'pyhwpx 객체에 open/Open 메서드가 없습니다.'
-                return None
-            self._notify_progress(f'한글에서 문서 여는 중...\n{src.name}')
-            if hasattr(hwp, 'save_pdf_as_image'):
-                self._notify_progress(f'PDF로 변환 중...\n{src.name}')
-                hwp.save_pdf_as_image(str(out_pdf))
-            elif hasattr(hwp, 'save_as'):
-                try:
+            capture_out = io.StringIO()
+            capture_err = io.StringIO()
+            with contextlib.redirect_stdout(capture_out), contextlib.redirect_stderr(capture_err):
+                self._notify_progress(f'한글 자동화 연결 중...\n{src.name}')
+                hwp = Hwp()
+                if hasattr(hwp, 'open'):
+                    hwp.open(str(src))
+                elif hasattr(hwp, 'Open'):
+                    hwp.Open(str(src))
+                else:
+                    self._last_hwp_error = 'pyhwpx 객체에 open/Open 메서드가 없습니다.'
+                    return None
+                self._notify_progress(f'한글에서 문서 여는 중...\n{src.name}')
+                if hasattr(hwp, 'save_pdf_as_image'):
                     self._notify_progress(f'PDF로 변환 중...\n{src.name}')
-                    hwp.save_as(path=str(out_pdf), format='PDF')
-                except TypeError:
-                    hwp.save_as(str(out_pdf), format='PDF')
-            elif hasattr(hwp, 'SaveAs'):
-                self._notify_progress(f'PDF로 변환 중...\n{src.name}')
-                hwp.SaveAs(str(out_pdf), 'PDF')
-            else:
-                self._last_hwp_error = 'pyhwpx 객체에 PDF 저장 메서드가 없습니다.'
-                return None
+                    hwp.save_pdf_as_image(str(out_pdf))
+                elif hasattr(hwp, 'save_as'):
+                    try:
+                        self._notify_progress(f'PDF로 변환 중...\n{src.name}')
+                        hwp.save_as(path=str(out_pdf), format='PDF')
+                    except TypeError:
+                        hwp.save_as(str(out_pdf), format='PDF')
+                elif hasattr(hwp, 'SaveAs'):
+                    self._notify_progress(f'PDF로 변환 중...\n{src.name}')
+                    hwp.SaveAs(str(out_pdf), 'PDF')
+                else:
+                    self._last_hwp_error = 'pyhwpx 객체에 PDF 저장 메서드가 없습니다.'
+                    return None
+            logs_text = (capture_out.getvalue() + '\n' + capture_err.getvalue()).strip()
             if out_pdf.exists() and out_pdf.stat().st_size > 0:
                 return fitz.open(str(out_pdf))
-            self._last_hwp_error = '한글이 PDF 파일을 생성하지 않았습니다.'
+            if 'RegisterModule' in logs_text and ('WinError 2' in logs_text or '지정된 파일을 찾을 수 없습니다' in logs_text):
+                self._last_hwp_error = (
+                    '한글 보안 모듈 자동 등록에 실패했습니다. '
+                    '접근 허용 팝업에서 허용 후 다시 시도해 주세요.'
+                )
+            else:
+                self._last_hwp_error = '한글이 PDF 파일을 생성하지 않았습니다.'
         except Exception as exc:
-            self._last_hwp_error = str(exc)
+            raw_error = str(exc).strip()
+            if 'RegisterModule' in raw_error or ('WinError 2' in raw_error and 'FilePathCheckerModule' in raw_error):
+                self._last_hwp_error = (
+                    '한글 보안 모듈 자동 등록에 실패했습니다. '
+                    '접근 허용 팝업에서 허용 후 다시 시도해 주세요.'
+                )
+            else:
+                self._last_hwp_error = raw_error
             return None
         finally:
             for name in ('quit', 'Quit', 'close', 'Close'):
