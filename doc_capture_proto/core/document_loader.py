@@ -6,7 +6,7 @@ import zipfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import fitz
 from PySide6.QtCore import QRectF, Qt
@@ -28,6 +28,7 @@ class DocumentLoader:
         self.doc_index: int = -1
         self.page_index: int = 0
         self._last_word_error: str = ''
+        self._progress_callback: Callable[[str], None] | None = None
         self._temp_dir = Path(tempfile.mkdtemp(prefix='doc_capture_source_'))
         try:
             fitz.TOOLS.mupdf_display_warnings(False)
@@ -46,7 +47,7 @@ class DocumentLoader:
             return None
         return self.loaded_documents[self.doc_index]
 
-    def open_file_dialog(self, parent: QWidget) -> bool:
+    def open_file_dialog(self, parent: QWidget, progress_callback: Callable[[str], None] | None = None) -> bool:
         paths, _ = QFileDialog.getOpenFileNames(
             parent,
             '문서 불러오기',
@@ -56,18 +57,27 @@ class DocumentLoader:
         if not paths:
             return False
         loaded_any = False
-        for path in paths:
-            loaded_any = self.open_document(path) or loaded_any
-        return loaded_any
+        self._progress_callback = progress_callback
+        try:
+            total = len(paths)
+            for index, path in enumerate(paths, start=1):
+                self._notify_progress(f'문서 불러오는 중... ({index}/{total})\n{Path(path).name}')
+                loaded_any = self.open_document(path) or loaded_any
+            return loaded_any
+        finally:
+            self._progress_callback = None
 
     def open_document(self, path: str) -> bool:
         src = Path(path)
         ext = src.suffix.lower()
         if ext == '.pdf':
+            self._notify_progress(f'PDF 열기 중...\n{src.name}')
             loaded = LoadedDocument(src, fitz.open(str(src)), 'pdf')
         elif ext in {'.doc', '.docx'}:
+            self._notify_progress(f'Word 문서 준비 중...\n{src.name}')
             loaded = self._open_word_family(src)
         elif ext in {'.hwp', '.hwpx'}:
+            self._notify_progress(f'한글 문서 준비 중...\n{src.name}')
             loaded = self._open_hwp_family(src)
         else:
             raise ValueError(f'지원하지 않는 형식입니다: {ext}')
@@ -79,6 +89,7 @@ class DocumentLoader:
 
     def _open_word_family(self, src: Path) -> LoadedDocument:
         self._last_word_error = ''
+        self._notify_progress(f'Microsoft Word로 렌더링 중...\n{src.name}')
         pdf_doc = self._open_word_via_pdf_bridge(src)
         if pdf_doc is not None:
             return LoadedDocument(src, pdf_doc, src.suffix.lower().lstrip('.'))
@@ -102,12 +113,14 @@ class DocumentLoader:
         doc = None
         try:
             pythoncom.CoInitialize()
+            self._notify_progress(f'Word 자동화 연결 중...\n{resolved_src.name}')
             try:
                 word = win32com.client.Dispatch('Word.Application')
             except Exception:
                 word = win32com.client.DispatchEx('Word.Application')
             word.Visible = False
             word.DisplayAlerts = 0
+            self._notify_progress(f'Word에서 문서 여는 중...\n{resolved_src.name}')
             doc = word.Documents.Open(
                 FileName=str(resolved_src),
                 ConfirmConversions=False,
@@ -123,6 +136,7 @@ class DocumentLoader:
                     out_pdf.unlink()
             except Exception:
                 pass
+            self._notify_progress(f'PDF로 변환 중...\n{resolved_src.name}')
             try:
                 doc.ExportAsFixedFormat(
                     OutputFileName=str(out_pdf),
@@ -157,6 +171,10 @@ class DocumentLoader:
             except Exception:
                 pass
         return None
+
+    def _notify_progress(self, message: str) -> None:
+        if self._progress_callback is not None:
+            self._progress_callback(message)
 
     def _open_hwp_family(self, src: Path) -> LoadedDocument:
         pdf_doc = self._open_hwp_via_pdf_bridge(src)

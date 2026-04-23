@@ -5,6 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -86,6 +87,63 @@ class PanelControls(QWidget):
             layout.addWidget(button, 0)
 
 
+class BusyOverlay(QWidget):
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet('background:rgba(10, 14, 20, 150);')
+        self.hide()
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.addStretch(1)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+
+        self.card = QWidget(self)
+        self.card.setObjectName('busyCard')
+        self.card.setStyleSheet(
+            '#busyCard {'
+            'background:#1a2028;'
+            'border:1px solid #3a4756;'
+            'border-radius:12px;'
+            '}'
+        )
+        card_layout = QVBoxLayout(self.card)
+        card_layout.setContentsMargins(22, 18, 22, 18)
+        card_layout.setSpacing(10)
+
+        self.title_label = QLabel('작업 중')
+        self.title_label.setStyleSheet('color:#ffffff; font-size:16px; font-weight:700;')
+        self.detail_label = QLabel('')
+        self.detail_label.setStyleSheet('color:#d4dbe3; font-size:13px;')
+        self.detail_label.setWordWrap(True)
+        self.detail_label.setAlignment(Qt.AlignCenter)
+
+        card_layout.addWidget(self.title_label, 0, Qt.AlignCenter)
+        card_layout.addWidget(self.detail_label, 0, Qt.AlignCenter)
+        self.card.setFixedWidth(360)
+
+        row.addWidget(self.card, 0)
+        row.addStretch(1)
+
+        root.addLayout(row)
+        root.addStretch(1)
+
+    def resize_to_parent(self) -> None:
+        parent = self.parentWidget()
+        if parent is not None:
+            self.setGeometry(parent.rect())
+
+    def show_message(self, title: str, detail: str) -> None:
+        self.title_label.setText(title)
+        self.detail_label.setText(detail)
+        self.resize_to_parent()
+        self.raise_()
+        self.show()
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -144,10 +202,16 @@ class MainWindow(QMainWindow):
         root.setSpacing(8)
         root.addLayout(self._build_top_buttons())
         root.addLayout(self._build_content(), 1)
+        self.busy_overlay = BusyOverlay(central)
         self._set_active_panel('origin')
         self._update_doc_slots()
         self._update_clipboard_count()
         self._update_here_slots()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, 'busy_overlay'):
+            self.busy_overlay.resize_to_parent()
 
     def _build_top_buttons(self):
         layout = QHBoxLayout()
@@ -346,13 +410,16 @@ class MainWindow(QMainWindow):
         self.clipboard_count_label.setText(f'({len(self.clipboard_store.items)})')
 
     def _load_doc(self) -> None:
+        self._show_busy('문서 로드 중', '불러올 문서를 선택하는 중...')
         try:
-            loaded = self.loader.open_file_dialog(self)
+            loaded = self.loader.open_file_dialog(self, progress_callback=self._update_busy_message)
             if loaded:
                 self.origin_view.refresh()
                 self._update_doc_slots()
         except Exception as exc:
             QMessageBox.critical(self, '문서 로드 오류', str(exc))
+        finally:
+            self._hide_busy()
 
     def _add_capture(self, image) -> None:
         self._push_undo_state()
@@ -535,11 +602,14 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, 'PDF 저장', str(Path.home() / 'output.pdf'), 'PDF Files (*.pdf)')
         if not path:
             return
+        self._show_busy('PDF 출력 중', 'HERE 페이지를 PDF로 내보내는 중...')
         try:
             self.pdf_exporter.export_pages(self.here_view.export_pages(), path, *self.here_view.scene_size)
             QMessageBox.information(self, 'PDF 출력', f'저장 완료\n{path}')
         except Exception as exc:
             QMessageBox.critical(self, 'PDF 출력 오류', str(exc))
+        finally:
+            self._hide_busy()
 
     def _save_project(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, '작업 저장', str(Path.home() / 'capture_project.dcap'), 'Doc Capture Project (*.dcap)')
@@ -555,6 +625,7 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, '작업 불러오기', str(Path.home()), 'Doc Capture Project (*.dcap)')
         if not path:
             return
+        self._show_busy('작업 불러오는 중', f'프로젝트를 복원하는 중...\n{Path(path).name}')
         try:
             data = self.project_store.load(path)
             self.clipboard_store.replace_all(data['clipboard_items'])
@@ -566,6 +637,8 @@ class MainWindow(QMainWindow):
             self.undo_stack.clear()
         except Exception as exc:
             QMessageBox.critical(self, '불러오기 오류', str(exc))
+        finally:
+            self._hide_busy()
 
     def _reset_all(self) -> None:
         reply = QMessageBox.question(self, '새로고침', '현재 작업을 초기화합니다. 계속하시겠습니까?')
@@ -584,3 +657,17 @@ class MainWindow(QMainWindow):
         self.undo_stack.clear()
         self._update_doc_slots()
         self._update_here_slots()
+
+    def _show_busy(self, title: str, detail: str) -> None:
+        self.busy_overlay.show_message(title, detail)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        QApplication.processEvents()
+
+    def _update_busy_message(self, detail: str) -> None:
+        self.busy_overlay.show_message('문서 로드 중', detail)
+        QApplication.processEvents()
+
+    def _hide_busy(self) -> None:
+        self.busy_overlay.hide()
+        QApplication.restoreOverrideCursor()
+        QApplication.processEvents()
