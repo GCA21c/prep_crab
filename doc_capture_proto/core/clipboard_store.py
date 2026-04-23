@@ -11,6 +11,7 @@ from PySide6.QtGui import QImage
 class ClipboardItem:
     number: int
     timestamp: str
+    name: str
     image: QImage
 
 
@@ -20,9 +21,11 @@ class ClipboardStore:
         self.current_index: int = -1
 
     def add(self, image: QImage, timestamp: str | None = None) -> ClipboardItem:
+        resolved_timestamp = timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         item = ClipboardItem(
             number=len(self.items) + 1,
-            timestamp=timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            timestamp=resolved_timestamp,
+            name=resolved_timestamp,
             image=image,
         )
         self.items.append(item)
@@ -72,13 +75,25 @@ class ClipboardStore:
         self.items = list(items)
         for i, entry in enumerate(self.items, start=1):
             entry.number = i
+            if not getattr(entry, 'name', ''):
+                entry.name = entry.timestamp
         self.current_index = len(self.items) - 1 if self.items else -1
+
+    def rename(self, index: int, name: str) -> bool:
+        if not (0 <= index < len(self.items)):
+            return False
+        cleaned = name.strip()
+        if not cleaned:
+            return False
+        self.items[index].name = cleaned
+        return True
 
     def clone_items(self) -> list[ClipboardItem]:
         return [
             ClipboardItem(
                 number=item.number,
                 timestamp=item.timestamp,
+                name=getattr(item, 'name', item.timestamp),
                 image=item.image.copy(),
             )
             for item in self.items

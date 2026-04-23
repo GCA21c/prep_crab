@@ -81,6 +81,7 @@ class MainWindow(QMainWindow):
         self.origin_view.capture_ready.connect(self._add_capture)
         self.origin_view.live_preview_changed.connect(self.clipboard_view.set_live_preview)
         self.clipboard_view.send_to_here.connect(self._send_clipboard_to_here)
+        self.clipboard_view.rename_requested.connect(self._rename_clipboard_item)
         self.clipboard_view.saved_preview.drag_started.connect(self.here_view.set_pending_drag_image)
         self.clipboard_view.delete_requested.connect(self._delete_clipboard_index)
         self.here_view.clipboard_index_selected.connect(lambda idx: self.clipboard_view.set_selected_index(idx, passive=True))
@@ -161,7 +162,12 @@ class MainWindow(QMainWindow):
 
     def _snapshot_state(self) -> dict:
         clipboard_items = [
-            ClipboardItem(number=item.number, timestamp=item.timestamp, image=item.image.copy())
+            ClipboardItem(
+                number=item.number,
+                timestamp=item.timestamp,
+                name=getattr(item, 'name', item.timestamp),
+                image=item.image.copy(),
+            )
             for item in self.clipboard_store.items
         ]
         pages: list[list[dict]] = []
@@ -193,6 +199,7 @@ class MainWindow(QMainWindow):
             'here_pages': pages,
             'here_current_page': self.here_view.current_page_index,
             'here_selected_index': self.here_view.selected_index,
+            'here_selected_indices': sorted(self.here_view.selected_indices),
         }
 
     def _restore_snapshot(self, snap: dict) -> None:
@@ -202,6 +209,14 @@ class MainWindow(QMainWindow):
         self.here_view.restore_pages(snap['here_pages'])
         self.here_view.current_page_index = min(max(0, snap.get('here_current_page', 0)), len(self.here_view.pages) - 1)
         self.here_view.selected_index = snap.get('here_selected_index', -1)
+        self.here_view.selected_indices = {
+            idx for idx in snap.get('here_selected_indices', [])
+            if 0 <= idx < len(self.here_view.blocks)
+        }
+        if self.here_view.selected_index not in self.here_view.selected_indices and self.here_view.selected_index >= 0:
+            self.here_view.selected_indices.add(self.here_view.selected_index)
+        if self.here_view.selected_index < 0 and self.here_view.selected_indices:
+            self.here_view.selected_index = max(self.here_view.selected_indices)
         self.here_view._emit_selected_clipboard_index()
         self.here_view.update()
 
@@ -257,21 +272,42 @@ class MainWindow(QMainWindow):
         self._push_undo_state()
         self.here_view.add_block(image, row)
 
-    def _duplicate_here_selection(self, image, offset_info) -> None:
+    def _duplicate_here_selection(self, payload, offset_info) -> None:
         self._push_undo_state()
-        item = self.clipboard_store.add(image)
-        self.clipboard_view.add_item(item)
-        x = None
-        y = None
-        if 0 <= self.here_view.selected_index < len(self.here_view.blocks):
-            selected = self.here_view.blocks[self.here_view.selected_index]
-            x = float(selected['x']) + float(offset_info.get('x_offset', 24.0))
-            y = float(selected['y']) + float(offset_info.get('y_offset', 24.0))
-        self.here_view.add_block(image, len(self.clipboard_store.items) - 1, x=x, y=y)
+        entries = payload if isinstance(payload, list) else [{'image': payload, 'source_index': -1, 'relative_x': 0.0, 'relative_y': 0.0}]
+        added_indices: list[int] = []
+        offset_x = float(offset_info.get('x_offset', 24.0))
+        offset_y = float(offset_info.get('y_offset', 24.0))
+        for entry in entries:
+            image = entry['image']
+            item = self.clipboard_store.add(image)
+            self.clipboard_view.add_item(item)
+            x = float(entry.get('relative_x', 0.0)) + offset_x
+            y = float(entry.get('relative_y', 0.0)) + offset_y
+            self.here_view.add_block(image, len(self.clipboard_store.items) - 1, x=x, y=y)
+            added_indices.append(self.here_view.selected_index)
+        self.here_view.selected_indices = set(idx for idx in added_indices if idx >= 0)
+        if added_indices:
+            self.here_view.selected_index = added_indices[-1]
+        self.here_view._emit_selected_clipboard_index()
         self._set_active_panel('here')
 
-    def _delete_here_block_index(self, index: int) -> None:
-        self.here_view.delete_block_at(index)
+    def _delete_here_block_index(self, index: int | list[int]) -> None:
+        if isinstance(index, list):
+            self.here_view.delete_blocks_at(index)
+        else:
+            self.here_view.delete_block_at(index)
+
+    def _rename_clipboard_item(self, index: int, name: str) -> None:
+        if not (0 <= index < len(self.clipboard_store.items)):
+            return
+        current_name = getattr(self.clipboard_store.items[index], 'name', self.clipboard_store.items[index].timestamp)
+        if name.strip() == current_name:
+            return
+        self._push_undo_state()
+        if self.clipboard_store.rename(index, name):
+            self.clipboard_view.refresh_item_label(index)
+            self.clipboard_view.set_selected_index(index, passive=False)
 
     def _delete_clipboard_index(self, index: int) -> None:
         if not (0 <= index < len(self.clipboard_store.items)):

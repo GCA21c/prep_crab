@@ -14,7 +14,7 @@ class HereView(QWidget):
     interaction_started = Signal(str)
     page_wheel_requested = Signal(int)
     clipboard_index_selected = Signal(int)
-    delete_requested = Signal(int)
+    delete_requested = Signal(object)
     history_checkpoint_requested = Signal()
     duplicate_to_clipboard_requested = Signal(object, object)
 
@@ -24,6 +24,7 @@ class HereView(QWidget):
         self.page_view_states: list[dict] = [{'zoom': 0.55, 'pan_x': 0.0, 'pan_y': 0.0}]
         self.current_page_index: int = 0
         self.selected_index: int = -1
+        self.selected_indices: set[int] = set()
         self.drag_last = QPointF()
         self.space_pressed = False
         self.middle_panning = False
@@ -39,6 +40,8 @@ class HereView(QWidget):
         self.pending_drag_image: QImage | None = None
         self.pending_drag_source_index: int = -1
         self.clipboard_image: QImage | None = None
+        self.clipboard_blocks: list[dict] = []
+        self.paste_serial: int = 0
         self._suppress_modifier_align = False
         self.guide_lines_x: list[float] = []
         self.guide_lines_y: list[float] = []
@@ -77,7 +80,7 @@ class HereView(QWidget):
         self.pages.append([])
         self.page_view_states.append({'zoom': self.default_zoom, 'pan_x': self.default_pan.x(), 'pan_y': self.default_pan.y()})
         self.current_page_index = len(self.pages) - 1
-        self.selected_index = -1
+        self._clear_selection()
         self.reset_view()
         self._save_current_view_state()
         self.update()
@@ -87,14 +90,14 @@ class HereView(QWidget):
         if len(self.pages) <= 1:
             self.pages[0].clear()
             self.page_view_states = [{'zoom': self.default_zoom, 'pan_x': self.default_pan.x(), 'pan_y': self.default_pan.y()}]
-            self.selected_index = -1
+            self._clear_selection()
             self.reset_view()
         else:
             self.pages.pop(self.current_page_index)
             if self.current_page_index < len(self.page_view_states):
                 self.page_view_states.pop(self.current_page_index)
             self.current_page_index = max(0, self.current_page_index - 1)
-            self.selected_index = -1
+            self._clear_selection()
             self._restore_current_view_state()
         self.update()
 
@@ -102,7 +105,7 @@ class HereView(QWidget):
         if self.current_page_index < len(self.pages) - 1:
             self._save_current_view_state()
             self.current_page_index += 1
-            self.selected_index = -1
+            self._clear_selection()
             self._restore_current_view_state()
             self._emit_selected_clipboard_index()
             self.update()
@@ -111,7 +114,7 @@ class HereView(QWidget):
         if self.current_page_index > 0:
             self._save_current_view_state()
             self.current_page_index -= 1
-            self.selected_index = -1
+            self._clear_selection()
             self._restore_current_view_state()
             self._emit_selected_clipboard_index()
             self.update()
@@ -153,7 +156,7 @@ class HereView(QWidget):
 
     def add_block(self, image: QImage, source_index: int = -1, x: float | None = None, y: float | None = None) -> None:
         self.blocks.append(self._make_block(image, source_index, x, y))
-        self.selected_index = len(self.blocks) - 1
+        self._set_single_selection(len(self.blocks) - 1)
         self.setFocus()
         self._emit_selected_clipboard_index()
         self.update()
@@ -162,7 +165,7 @@ class HereView(QWidget):
         self.pages = pages if pages else [[]]
         self.page_view_states = [{'zoom': self.default_zoom, 'pan_x': self.default_pan.x(), 'pan_y': self.default_pan.y()} for _ in self.pages]
         self.current_page_index = 0
-        self.selected_index = -1
+        self._clear_selection()
         total = 0
         for page in self.pages:
             for block in page:
@@ -184,19 +187,25 @@ class HereView(QWidget):
         return self.pages
 
     def delete_selected_block(self) -> None:
-        if 0 <= self.selected_index < len(self.blocks):
-            self.delete_requested.emit(self.selected_index)
+        indices = self._selected_indices_sorted()
+        if indices:
+            self.delete_requested.emit(indices)
 
     def delete_block_at(self, index: int) -> None:
         if not (0 <= index < len(self.blocks)):
             return
         self.blocks.pop(index)
-        if self.selected_index >= len(self.blocks):
-            self.selected_index = len(self.blocks) - 1
-        elif self.selected_index > index:
-            self.selected_index -= 1
-        elif self.selected_index == index:
-            self.selected_index = -1
+        self._reindex_selection_after_delete(index)
+        self._emit_selected_clipboard_index()
+        self.update()
+
+    def delete_blocks_at(self, indices: list[int]) -> None:
+        valid = sorted({idx for idx in indices if 0 <= idx < len(self.blocks)}, reverse=True)
+        if not valid:
+            return
+        for idx in valid:
+            self.blocks.pop(idx)
+            self._reindex_selection_after_delete(idx)
         self._emit_selected_clipboard_index()
         self.update()
 
@@ -208,8 +217,12 @@ class HereView(QWidget):
                 changed = True
             page[:] = new_page
         if changed:
-            if self.selected_index >= len(self.blocks):
-                self.selected_index = len(self.blocks) - 1
+            self.selected_indices = {
+                idx for idx in self.selected_indices
+                if 0 <= idx < len(self.blocks)
+            }
+            if self.selected_index not in self.selected_indices:
+                self.selected_index = max(self.selected_indices) if self.selected_indices else -1
             self._emit_selected_clipboard_index()
             self.update()
 
@@ -227,6 +240,65 @@ class HereView(QWidget):
             self.clipboard_index_selected.emit(self.blocks[self.selected_index].get('source_index', -1))
         else:
             self.clipboard_index_selected.emit(-1)
+
+    def _clear_selection(self) -> None:
+        self.selected_index = -1
+        self.selected_indices.clear()
+
+    def _set_single_selection(self, index: int) -> None:
+        if 0 <= index < len(self.blocks):
+            self.selected_index = index
+            self.selected_indices = {index}
+        else:
+            self._clear_selection()
+
+    def _toggle_selection(self, index: int) -> None:
+        if not (0 <= index < len(self.blocks)):
+            return
+        if index in self.selected_indices:
+            self.selected_indices.remove(index)
+            if self.selected_index == index:
+                self.selected_index = max(self.selected_indices) if self.selected_indices else -1
+        else:
+            self.selected_indices.add(index)
+            self.selected_index = index
+
+    def _selected_indices_sorted(self) -> list[int]:
+        if not self.selected_indices and 0 <= self.selected_index < len(self.blocks):
+            return [self.selected_index]
+        return sorted(idx for idx in self.selected_indices if 0 <= idx < len(self.blocks))
+
+    def _reindex_selection_after_delete(self, deleted_index: int) -> None:
+        new_selection: set[int] = set()
+        for idx in self.selected_indices:
+            if idx == deleted_index:
+                continue
+            new_selection.add(idx - 1 if idx > deleted_index else idx)
+        self.selected_indices = {idx for idx in new_selection if 0 <= idx < len(self.blocks)}
+        if self.selected_index == deleted_index:
+            self.selected_index = max(self.selected_indices) if self.selected_indices else -1
+        elif self.selected_index > deleted_index:
+            self.selected_index -= 1
+        elif self.selected_index not in self.selected_indices:
+            self.selected_index = max(self.selected_indices) if self.selected_indices else -1
+
+    def _copy_selected_blocks(self) -> None:
+        indices = self._selected_indices_sorted()
+        if not indices:
+            return
+        min_x = min(float(self.blocks[idx]['x']) for idx in indices)
+        min_y = min(float(self.blocks[idx]['y']) for idx in indices)
+        self.clipboard_blocks = []
+        for idx in indices:
+            block = self.blocks[idx]
+            self.clipboard_blocks.append({
+                'image': block['image'].copy(),
+                'source_index': int(block.get('source_index', -1)),
+                'relative_x': float(block['x']) - min_x,
+                'relative_y': float(block['y']) - min_y,
+            })
+        self.clipboard_image = self.blocks[self.selected_index]['image'].copy() if 0 <= self.selected_index < len(self.blocks) else None
+        self.paste_serial = 0
 
     def _page_rect_view(self) -> QRectF:
         return QRectF(-self.pan.x(), -self.pan.y(), self.scene_size[0] * self.zoom, self.scene_size[1] * self.zoom)
@@ -340,7 +412,7 @@ class HereView(QWidget):
 
     def mouseDoubleClickEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
-            if 0 <= self.selected_index < len(self.blocks) and self._block_rect_view(self.blocks[self.selected_index]).contains(event.position()):
+            if len(self._selected_indices_sorted()) == 1 and 0 <= self.selected_index < len(self.blocks) and self._block_rect_view(self.blocks[self.selected_index]).contains(event.position()):
                 block = self.blocks[self.selected_index]
                 if block.get('size_history') or (
                     float(block['w']) != float(block.get('original_w', block['image'].width()))
@@ -359,6 +431,7 @@ class HereView(QWidget):
         self.interaction_started.emit('here')
         self.setFocus()
         self.drag_last = event.position()
+        ctrl_pressed = bool(event.modifiers() & Qt.ControlModifier)
         if event.button() == Qt.MiddleButton:
             self.middle_panning = True
             self.panning = True
@@ -371,12 +444,15 @@ class HereView(QWidget):
             self.panning = True
             self.setCursor(Qt.ClosedHandCursor)
             return
-        self.selected_index = -1
         for i in reversed(range(len(self.blocks))):
             block = self.blocks[i]
             handle = self._resize_handle_at(block, pos)
             if handle is not None:
-                self.selected_index = i
+                if ctrl_pressed:
+                    self.selected_indices.add(i)
+                    self.selected_index = i
+                elif i not in self.selected_indices or len(self.selected_indices) != 1:
+                    self._set_single_selection(i)
                 self.resizing_block = True
                 self.resize_mode = handle
                 self._push_size_history(block)
@@ -391,12 +467,19 @@ class HereView(QWidget):
                 self.update()
                 return
             if self._block_rect_view(block).contains(pos):
-                self.selected_index = i
-                self.dragging_block = True
-                self.history_checkpoint_requested.emit()
+                if ctrl_pressed:
+                    self._toggle_selection(i)
+                    self.dragging_block = False
+                else:
+                    if i not in self.selected_indices or len(self.selected_indices) != 1:
+                        self._set_single_selection(i)
+                    self.dragging_block = True
+                    self.history_checkpoint_requested.emit()
                 self._emit_selected_clipboard_index()
                 self.update()
                 return
+        if not ctrl_pressed:
+            self._clear_selection()
         self._emit_selected_clipboard_index()
         self.update()
 
@@ -447,8 +530,12 @@ class HereView(QWidget):
             self.update()
             return
         if self.dragging_block and (event.buttons() & Qt.LeftButton):
-            block['x'] += delta.x() / self.zoom
-            block['y'] += delta.y() / self.zoom
+            selected_indices = self._selected_indices_sorted()
+            move_x = delta.x() / self.zoom
+            move_y = delta.y() / self.zoom
+            for idx in selected_indices:
+                self.blocks[idx]['x'] += move_x
+                self.blocks[idx]['y'] += move_y
             self.drag_last = pos
             self._apply_magnet(block)
             self._save_current_view_state()
@@ -504,28 +591,39 @@ class HereView(QWidget):
                 self.history_checkpoint_requested.emit()
                 self.delete_selected_block()
             return
-        if self.selected_index >= 0 and event.key() == Qt.Key_C and mods & Qt.ControlModifier:
+        if event.key() == Qt.Key_C and mods & Qt.ControlModifier:
             if not event.isAutoRepeat():
-                self.clipboard_image = self.blocks[self.selected_index]['image'].copy()
+                self._copy_selected_blocks()
             return
-        if self.selected_index >= 0 and event.key() == Qt.Key_V and mods & Qt.ControlModifier:
+        if event.key() == Qt.Key_V and mods & Qt.ControlModifier:
             if not event.isAutoRepeat():
-                image = self.clipboard_image or self.blocks[self.selected_index]['image'].copy()
-                self.duplicate_to_clipboard_requested.emit(image, {'x_offset': 24.0, 'y_offset': 24.0})
+                if self.clipboard_blocks:
+                    self.paste_serial += 1
+                    offset = 24.0 * self.paste_serial
+                    self.duplicate_to_clipboard_requested.emit(self.clipboard_blocks, {'x_offset': offset, 'y_offset': offset})
+                elif self.clipboard_image is not None:
+                    self.paste_serial += 1
+                    offset = 24.0 * self.paste_serial
+                    self.duplicate_to_clipboard_requested.emit(
+                        [{'image': self.clipboard_image.copy(), 'source_index': -1, 'relative_x': 0.0, 'relative_y': 0.0}],
+                        {'x_offset': offset, 'y_offset': offset},
+                    )
             return
         if self.selected_index >= 0 and event.key() in arrow_keys:
             if not event.isAutoRepeat():
                 self.history_checkpoint_requested.emit()
             step = 1.0
+            for idx in self._selected_indices_sorted():
+                block = self.blocks[idx]
+                if event.key() == Qt.Key_Left:
+                    block['x'] -= step
+                elif event.key() == Qt.Key_Right:
+                    block['x'] += step
+                elif event.key() == Qt.Key_Up:
+                    block['y'] -= step
+                elif event.key() == Qt.Key_Down:
+                    block['y'] += step
             block = self.blocks[self.selected_index]
-            if event.key() == Qt.Key_Left:
-                block['x'] -= step
-            elif event.key() == Qt.Key_Right:
-                block['x'] += step
-            elif event.key() == Qt.Key_Up:
-                block['y'] -= step
-            elif event.key() == Qt.Key_Down:
-                block['y'] += step
             self._apply_magnet(block)
             self._save_current_view_state()
             event.accept()
@@ -625,11 +723,12 @@ class HereView(QWidget):
         for i, block in enumerate(self.blocks):
             rect = self._block_rect_view(block)
             painter.drawImage(rect, block['image'])
-            if i == self.selected_index:
+            if i in self.selected_indices:
                 shadow_color = QColor(120, 120, 120, 150)
                 painter.fillRect(QRectF(rect.right() + 1, rect.top() + 3, 3, max(0.0, rect.height() - 1)), shadow_color)
                 painter.fillRect(QRectF(rect.left() + 3, rect.bottom() + 1, max(0.0, rect.width() - 1), 3), shadow_color)
-                painter.setPen(Qt.NoPen)
-                painter.setBrush(QColor('#d12c2c'))
-                for handle in ('corner', 'right', 'bottom'):
-                    painter.drawEllipse(self._resize_handle_visual_rect(block, handle))
+                if i == self.selected_index:
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(QColor('#d12c2c'))
+                    for handle in ('corner', 'right', 'bottom'):
+                        painter.drawEllipse(self._resize_handle_visual_rect(block, handle))

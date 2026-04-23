@@ -15,7 +15,7 @@ class ProjectStore:
         if out.suffix.lower() != '.dcap':
             out = out.with_suffix('.dcap')
         manifest = {
-            'version': 1,
+            'version': 2,
             'clipboard': [],
             'here_pages': [],
         }
@@ -29,6 +29,7 @@ class ProjectStore:
                 manifest['clipboard'].append({
                     'number': item.number,
                     'timestamp': item.timestamp,
+                    'name': getattr(item, 'name', item.timestamp),
                     'image': name,
                 })
 
@@ -68,6 +69,7 @@ class ProjectStore:
                 clipboard_items.append(ClipboardItem(
                     number=entry['number'],
                     timestamp=entry['timestamp'],
+                    name=entry.get('name', entry['timestamp']),
                     image=image,
                 ))
 

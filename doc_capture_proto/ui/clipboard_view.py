@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QMimeData, QPoint, Qt, Signal
 from PySide6.QtGui import QColor, QDrag, QImage, QMouseEvent, QPainter, QPixmap
-from PySide6.QtWidgets import QFrame, QLabel, QListWidget, QListWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QInputDialog, QLabel, QListWidget, QListWidgetItem, QVBoxLayout, QWidget
 
 from doc_capture_proto.core.clipboard_store import ClipboardItem, ClipboardStore
 
@@ -72,6 +72,7 @@ class ClipboardView(QWidget):
     send_to_here = Signal(object, int)
     interaction_started = Signal(str)
     delete_requested = Signal(int)
+    rename_requested = Signal(int, str)
 
     def __init__(self, store: ClipboardStore) -> None:
         super().__init__()
@@ -96,7 +97,7 @@ ORIGIN
 
 CLIPBOARD
  - 마우스 휠: 저장 이미지 순환
- - 더블클릭: HERE로 보내기
+ - 리스트 더블클릭: 항목 이름 변경
  - Delete: 항목 삭제
  - SELECTED 드래그: HERE로 드롭
 
@@ -144,7 +145,7 @@ HERE
         self.live_preview.set_image(image)
 
     def add_item(self, item: ClipboardItem) -> None:
-        label = f'{item.number:03d} - {item.timestamp}'
+        label = self._item_label(item)
         self.list_widget.addItem(QListWidgetItem(label))
         self.list_widget.setCurrentRow(len(self.store.items) - 1)
         self.saved_preview.set_image(item.image, len(self.store.items) - 1)
@@ -152,7 +153,7 @@ HERE
     def reload_from_store(self) -> None:
         self.list_widget.clear()
         for item in self.store.items:
-            self.list_widget.addItem(QListWidgetItem(f'{item.number:03d} - {item.timestamp}'))
+            self.list_widget.addItem(QListWidgetItem(self._item_label(item)))
         if self.store.items:
             row = self.store.current_index if self.store.current_index >= 0 else len(self.store.items) - 1
             self.list_widget.setCurrentRow(row)
@@ -177,6 +178,30 @@ HERE
         if row >= 0:
             self.delete_requested.emit(row)
 
+    def refresh_item_label(self, index: int) -> None:
+        if not (0 <= index < len(self.store.items)):
+            return
+        item_widget = self.list_widget.item(index)
+        if item_widget is None:
+            return
+        item_widget.setText(self._item_label(self.store.items[index]))
+
+    def _item_label(self, item: ClipboardItem) -> str:
+        return f'{item.number:03d} - {getattr(item, "name", item.timestamp)}'
+
+    def _open_rename_dialog(self, row: int) -> None:
+        if not (0 <= row < len(self.store.items)):
+            return
+        current = self.store.items[row]
+        self.store.set_current(row)
+        name, accepted = QInputDialog.getText(
+            self,
+            '캡쳐 이름 변경',
+            '캡쳐 이름',
+            text=getattr(current, 'name', current.timestamp),
+        )
+        if accepted and name.strip() and name.strip() != getattr(current, 'name', current.timestamp):
+            self.rename_requested.emit(row, name.strip())
 
     def eventFilter(self, watched, event) -> bool:
         if watched is self.list_widget and event.type() == QEvent.KeyPress and event.key() == Qt.Key_Delete:
@@ -212,12 +237,8 @@ HERE
     def _on_double_clicked(self, item: QListWidgetItem) -> None:
         self.interaction_started.emit('clipboard')
         row = self.list_widget.row(item)
-        self.store.set_current(row)
-        current = self.store.current()
-        if current is not None:
-            self.send_to_here.emit(current.image, row)
+        self._open_rename_dialog(row)
 
     def _on_saved_preview_double_clicked(self, image: QImage, row: int) -> None:
         self.interaction_started.emit('clipboard')
-        self.store.set_current(row)
-        self.send_to_here.emit(image, row)
+        self._open_rename_dialog(row)
