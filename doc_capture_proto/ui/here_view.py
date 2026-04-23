@@ -133,10 +133,18 @@ class HereView(QWidget):
         self.page_view_states[self.current_page_index] = {'zoom': self.default_zoom, 'pan_x': self.default_pan.x(), 'pan_y': self.default_pan.y()}
         self.update()
 
+    def _initial_block_dimensions(self, image: QImage) -> tuple[float, float]:
+        scale = 1.0 / float(self.zoom) if float(self.zoom) > 1.0 else 1.0
+        return (
+            max(24.0, float(image.width()) * scale),
+            max(24.0, float(image.height()) * scale),
+        )
+
     def _make_block(self, image: QImage, source_index: int = -1, x: float | None = None, y: float | None = None) -> dict:
         idx = sum(len(p) for p in self.pages)
         default_x = 40 + (len(self.blocks) % 2) * 220
         default_y = 40 + (len(self.blocks) // 2) * 180
+        target_w, target_h = self._initial_block_dimensions(image)
         bounds = find_content_bounds(image)
         content_left = float(bounds.left) if bounds is not None else 0.0
         content_right = float(bounds.right) if bounds is not None else max(0.0, image.width() - 1.0)
@@ -146,8 +154,8 @@ class HereView(QWidget):
             'source_index': source_index,
             'x': default_x if x is None else x,
             'y': default_y if y is None else y,
-            'w': float(image.width()),
-            'h': float(image.height()),
+            'w': target_w,
+            'h': target_h,
             'original_w': float(image.width()),
             'original_h': float(image.height()),
             'temp_path': str(temp_path),
@@ -406,11 +414,12 @@ class HereView(QWidget):
             return
         self.history_checkpoint_requested.emit()
         scene_pos = self._view_to_scene(event.position())
+        target_w, target_h = self._initial_block_dimensions(self.pending_drag_image)
         self.add_block(
             self.pending_drag_image,
             source_index=self.pending_drag_source_index,
-            x=max(0.0, scene_pos.x() - self.pending_drag_image.width() / 2),
-            y=max(0.0, scene_pos.y() - self.pending_drag_image.height() / 2),
+            x=max(0.0, scene_pos.x() - target_w / 2),
+            y=max(0.0, scene_pos.y() - target_h / 2),
         )
         self.pending_drag_image = None
         self.pending_drag_source_index = -1
