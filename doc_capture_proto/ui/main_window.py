@@ -6,7 +6,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -27,10 +26,10 @@ from doc_capture_proto.ui.origin_view import OriginView
 
 
 class LampLabel(QWidget):
-    def __init__(self, title: str) -> None:
+    def __init__(self, title: str, left_padding: int = 0) -> None:
         super().__init__()
         self.layout = QHBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setContentsMargins(left_padding, 0, 0, 0)
         self.layout.setSpacing(6)
         self.lamp = QLabel('●')
         self.text = QLabel(title)
@@ -73,6 +72,12 @@ class MainWindow(QMainWindow):
         self.doc_slots_label = QLabel('-')
         self.doc_slots_label.setStyleSheet('color:#ffffff; font-weight:700; padding:0 8px; font-size:14px;')
         self.doc_slots_label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        self.clipboard_count_label = QLabel('(0)')
+        self.clipboard_count_label.setStyleSheet('color:#ffffff; font-weight:700; padding:0 8px; font-size:14px;')
+        self.clipboard_count_label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        self.here_slots_label = QLabel('-')
+        self.here_slots_label.setStyleSheet('color:#ffffff; font-weight:700; padding:0 8px; font-size:14px;')
+        self.here_slots_label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
         self.btn_close_doc = QPushButton('x')
         self.btn_close_doc.setFixedWidth(24)
         self.btn_close_doc.setStyleSheet('QPushButton {color:#ffffff; background:#8a2d2d; border:1px solid #7a1f1f; border-radius:3px; font-weight:700;} QPushButton:hover {background:#a23636;}')
@@ -104,6 +109,8 @@ class MainWindow(QMainWindow):
         root.addLayout(self._build_content())
         self._set_active_panel('origin')
         self._update_doc_slots()
+        self._update_clipboard_count()
+        self._update_here_slots()
 
     def _build_top_buttons(self):
         layout = QHBoxLayout()
@@ -133,8 +140,8 @@ class MainWindow(QMainWindow):
         self.btn_prev_page.clicked.connect(self._prev_page)
         self.btn_next_page.clicked.connect(self._next_page)
         self.btn_capture.clicked.connect(self.origin_view.do_capture)
-        self.btn_here_add_page.clicked.connect(self.here_view.add_page)
-        self.btn_here_del_page.clicked.connect(self.here_view.delete_current_page)
+        self.btn_here_add_page.clicked.connect(self._add_here_page)
+        self.btn_here_del_page.clicked.connect(self._delete_here_page)
         self.btn_pdf.clicked.connect(self._export_pdf)
         self.btn_reset.clicked.connect(self._reset_all)
         self.btn_save.clicked.connect(self._save_project)
@@ -142,19 +149,25 @@ class MainWindow(QMainWindow):
         return layout
 
     def _build_titles(self):
-        layout = QGridLayout()
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(9)
         self.origin_title = LampLabel('ORIGIN')
         self.clipboard_title = LampLabel('CLIPBOARD')
-        self.here_title = LampLabel('HERE')
+        self.here_title = LampLabel('HERE', left_padding=-4)
         self.origin_title.layout.insertWidget(2, self.doc_slots_label)
         self.origin_title.layout.addWidget(self.btn_close_doc)
-        layout.addWidget(self.origin_title, 0, 0)
-        layout.addWidget(self.clipboard_title, 0, 1)
-        layout.addWidget(self.here_title, 0, 2)
+        self.clipboard_title.layout.insertWidget(2, self.clipboard_count_label)
+        self.here_title.layout.insertWidget(2, self.here_slots_label)
+        layout.addWidget(self.origin_title, 4)
+        layout.addWidget(self.clipboard_title, 3)
+        layout.addWidget(self.here_title, 4)
         return layout
 
     def _build_content(self):
         layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(9)
         layout.addWidget(self.origin_view, 4)
         layout.addWidget(self.clipboard_view, 3)
         layout.addWidget(self.here_view, 4)
@@ -206,6 +219,7 @@ class MainWindow(QMainWindow):
         self.clipboard_store.replace_all(snap['clipboard_items'])
         self.clipboard_store.current_index = snap.get('clipboard_current_index', self.clipboard_store.current_index)
         self.clipboard_view.reload_from_store()
+        self._update_clipboard_count()
         self.here_view.restore_pages(snap['here_pages'])
         self.here_view.current_page_index = min(max(0, snap.get('here_current_page', 0)), len(self.here_view.pages) - 1)
         self.here_view.selected_index = snap.get('here_selected_index', -1)
@@ -219,6 +233,7 @@ class MainWindow(QMainWindow):
             self.here_view.selected_index = max(self.here_view.selected_indices)
         self.here_view._emit_selected_clipboard_index()
         self.here_view.update()
+        self._update_here_slots()
 
     def _push_undo_state(self) -> None:
         self.undo_stack.append(self._snapshot_state())
@@ -253,6 +268,18 @@ class MainWindow(QMainWindow):
         self.doc_slots_label.setText(f'{slots}   ({current + 1}/{total})')
         self.btn_close_doc.setEnabled(True)
 
+    def _update_here_slots(self) -> None:
+        total = len(self.here_view.pages)
+        if total <= 0:
+            self.here_slots_label.setText('-')
+            return
+        current = min(max(0, self.here_view.current_page_index), total - 1)
+        slots = ''.join('■' if i == current else '□' for i in range(total))
+        self.here_slots_label.setText(f'{slots}   ({current + 1}/{total})')
+
+    def _update_clipboard_count(self) -> None:
+        self.clipboard_count_label.setText(f'({len(self.clipboard_store.items)})')
+
     def _load_doc(self) -> None:
         try:
             loaded = self.loader.open_file_dialog(self)
@@ -266,6 +293,7 @@ class MainWindow(QMainWindow):
         self._push_undo_state()
         item = self.clipboard_store.add(image)
         self.clipboard_view.add_item(item)
+        self._update_clipboard_count()
         self._set_active_panel('clipboard')
 
     def _send_clipboard_to_here(self, image, row: int) -> None:
@@ -290,13 +318,44 @@ class MainWindow(QMainWindow):
         if added_indices:
             self.here_view.selected_index = added_indices[-1]
         self.here_view._emit_selected_clipboard_index()
+        self._update_clipboard_count()
         self._set_active_panel('here')
 
     def _delete_here_block_index(self, index: int | list[int]) -> None:
-        if isinstance(index, list):
-            self.here_view.delete_blocks_at(index)
+        indices = index if isinstance(index, list) else [index]
+        valid_indices = sorted({idx for idx in indices if 0 <= idx < len(self.here_view.blocks)}, reverse=True)
+        if not valid_indices:
+            return
+        removed_source_indices = {
+            int(self.here_view.blocks[idx].get('source_index', -1))
+            for idx in valid_indices
+            if int(self.here_view.blocks[idx].get('source_index', -1)) >= 0
+        }
+        if len(valid_indices) == 1:
+            self.here_view.delete_block_at(valid_indices[0])
         else:
-            self.here_view.delete_block_at(index)
+            self.here_view.delete_blocks_at(valid_indices)
+
+        orphaned_sources: list[int] = []
+        for source_index in removed_source_indices:
+            still_used = any(
+                int(block.get('source_index', -1)) == source_index
+                for page in self.here_view.pages
+                for block in page
+            )
+            if not still_used:
+                orphaned_sources.append(source_index)
+
+        for source_index in sorted(orphaned_sources, reverse=True):
+            removed = self.clipboard_store.delete(source_index)
+            if removed is None:
+                continue
+            self.here_view.adjust_source_indices_after_clipboard_delete(source_index)
+
+        if orphaned_sources:
+            self.clipboard_view.reload_from_store()
+            self._update_clipboard_count()
+        self._set_active_panel('here')
 
     def _rename_clipboard_item(self, index: int, name: str) -> None:
         if not (0 <= index < len(self.clipboard_store.items)):
@@ -318,6 +377,7 @@ class MainWindow(QMainWindow):
             return
         self.here_view.delete_blocks_by_source_index(index)
         self.clipboard_view.reload_from_store()
+        self._update_clipboard_count()
         self.here_view.adjust_source_indices_after_clipboard_delete(index)
 
     def _on_origin_page_wheel(self, direction: int) -> None:
@@ -338,6 +398,7 @@ class MainWindow(QMainWindow):
             self.here_view.prev_page()
         else:
             self.here_view.next_page()
+        self._update_here_slots()
 
     def _close_current_doc(self) -> None:
         if self.loader.close_current_document():
@@ -357,6 +418,7 @@ class MainWindow(QMainWindow):
     def _prev_page(self) -> None:
         if self.active_panel == 'here':
             self.here_view.prev_page()
+            self._update_here_slots()
         else:
             self.loader.prev_page()
             self.origin_view.refresh()
@@ -364,9 +426,18 @@ class MainWindow(QMainWindow):
     def _next_page(self) -> None:
         if self.active_panel == 'here':
             self.here_view.next_page()
+            self._update_here_slots()
         else:
             self.loader.next_page()
             self.origin_view.refresh()
+
+    def _add_here_page(self) -> None:
+        self.here_view.add_page()
+        self._update_here_slots()
+
+    def _delete_here_page(self) -> None:
+        self.here_view.delete_current_page()
+        self._update_here_slots()
 
     def _export_pdf(self) -> None:
         if not any(self.here_view.pages):
@@ -399,7 +470,9 @@ class MainWindow(QMainWindow):
             data = self.project_store.load(path)
             self.clipboard_store.replace_all(data['clipboard_items'])
             self.clipboard_view.reload_from_store()
+            self._update_clipboard_count()
             self.here_view.restore_pages(data['here_pages'])
+            self._update_here_slots()
             self._set_active_panel('clipboard' if self.clipboard_store.items else 'here')
             self.undo_stack.clear()
         except Exception as exc:
@@ -414,8 +487,10 @@ class MainWindow(QMainWindow):
         self.origin_view.loader = self.loader
         self.clipboard_view.store = self.clipboard_store
         self.clipboard_view.reload_from_store()
+        self._update_clipboard_count()
         self.origin_view.page_image = None
         self.origin_view.update()
         self.here_view.restore_pages([[]])
         self.undo_stack.clear()
         self._update_doc_slots()
+        self._update_here_slots()
