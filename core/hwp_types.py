@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Union
 
 
 HWP_UNITS_PER_INCH = 7200.0
@@ -117,12 +118,19 @@ class HwpImageModel:
 
 
 @dataclass
+class HwpFlowBlock:
+    kind: str
+    payload: Union['HwpParagraphModel', 'HwpTableModel', 'HwpImageModel']
+
+
+@dataclass
 class HwpPageModel:
     size: HwpPageSize
     margins: HwpMargins = field(default_factory=HwpMargins)
     paragraphs: list[HwpParagraphModel] = field(default_factory=list)
     tables: list[HwpTableModel] = field(default_factory=list)
     images: list[HwpImageModel] = field(default_factory=list)
+    flow_blocks: list[HwpFlowBlock] = field(default_factory=list)
 
 
 @dataclass

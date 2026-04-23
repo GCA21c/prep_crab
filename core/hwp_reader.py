@@ -8,12 +8,16 @@ from pathlib import Path
 from core.hwp_probe import HwpProbeError, probe_hwp_source
 from core.hwp_types import (
     HwpDocumentModel,
+    HwpFlowBlock,
     HwpFormat,
     HwpMargins,
     HwpPageModel,
     HwpPageSize,
     HwpParagraphModel,
     HwpParagraphRun,
+    HwpTableCellModel,
+    HwpTableModel,
+    HwpTableRowModel,
 )
 
 
@@ -46,22 +50,18 @@ def _load_hwpx_document(path: Path, source) -> HwpDocumentModel:
         if not section_entries:
             section_entries = [name for name in zf.namelist() if name.lower().endswith('.xml')]
         for section_name in sorted(section_entries):
-            text_blocks = _extract_xml_text_blocks(zf.read(section_name))
-            if not text_blocks:
+            pages = _extract_hwpx_pages(zf.read(section_name), page_size)
+            if not pages:
                 continue
-            model.pages.append(
-                HwpPageModel(
-                    size=page_size,
-                    margins=HwpMargins(),
-                    paragraphs=[HwpParagraphModel(runs=[HwpParagraphRun(text=text)]) for text in text_blocks],
-                )
-            )
+            model.pages.extend(pages)
     if not model.pages:
+        empty_para = HwpParagraphModel(runs=[HwpParagraphRun(text='(빈 HWPX 문서)')])
         model.pages.append(
             HwpPageModel(
                 size=page_size,
                 margins=HwpMargins(),
-                paragraphs=[HwpParagraphModel(runs=[HwpParagraphRun(text='(빈 HWPX 문서)')])],
+                paragraphs=[empty_para],
+                flow_blocks=[HwpFlowBlock('paragraph', empty_para)],
             )
         )
     return model
@@ -196,8 +196,101 @@ def _text_to_pages(text: str, page_size: HwpPageSize, lines_per_page: int = 42) 
 
 
 def _make_page_from_lines(lines: list[str], page_size: HwpPageSize) -> HwpPageModel:
+    paragraphs = [HwpParagraphModel(runs=[HwpParagraphRun(text=line)]) for line in lines]
     return HwpPageModel(
         size=page_size,
         margins=HwpMargins(),
-        paragraphs=[HwpParagraphModel(runs=[HwpParagraphRun(text=line)]) for line in lines],
+        paragraphs=paragraphs,
+        flow_blocks=[HwpFlowBlock('paragraph', para) for para in paragraphs],
     )
+
+
+def _extract_hwpx_pages(raw_xml: bytes, page_size: HwpPageSize) -> list[HwpPageModel]:
+    try:
+        root = ET.fromstring(raw_xml)
+    except Exception:
+        return []
+    pages: list[HwpPageModel] = []
+    current_page = HwpPageModel(size=page_size, margins=HwpMargins())
+
+    def append_paragraph(text: str) -> None:
+        normalized = _normalize_text(text)
+        if not normalized:
+            return
+        para = HwpParagraphModel(runs=[HwpParagraphRun(text=normalized)])
+        current_page.paragraphs.append(para)
+        current_page.flow_blocks.append(HwpFlowBlock('paragraph', para))
+
+    def append_table(table: HwpTableModel) -> None:
+        if not table.rows:
+            return
+        current_page.tables.append(table)
+        current_page.flow_blocks.append(HwpFlowBlock('table', table))
+
+    def flush_page(force: bool = False) -> None:
+        nonlocal current_page
+        if force or current_page.flow_blocks:
+            pages.append(current_page)
+            current_page = HwpPageModel(size=page_size, margins=HwpMargins())
+
+    for elem in root.iter():
+        local = _local_name(elem.tag)
+        if local in {'tbl', 'table'}:
+            table = _parse_table_element(elem)
+            if table.rows:
+                append_table(table)
+            continue
+        if local in {'br', 'break'} and (elem.attrib.get('type', '').lower() == 'page' or 'page' in ''.join(elem.attrib.values()).lower()):
+            flush_page()
+            continue
+        if local in {'pagebreak', 'pagebreakline', 'lastrenderedpagebreak'}:
+            flush_page()
+            continue
+        if local in {'p', 'paragraph'}:
+            append_paragraph(_collect_text(elem))
+    if current_page.flow_blocks:
+        pages.append(current_page)
+    return pages
+
+
+def _parse_table_element(table_elem: ET.Element) -> HwpTableModel:
+    table = HwpTableModel()
+    for row_elem in table_elem.iter():
+        if _local_name(row_elem.tag) not in {'tr', 'row'}:
+            continue
+        row = HwpTableRowModel()
+        for cell_elem in row_elem:
+            if _local_name(cell_elem.tag) not in {'tc', 'cell'}:
+                continue
+            texts = _extract_paragraph_texts(cell_elem)
+            paragraphs = [HwpParagraphModel(runs=[HwpParagraphRun(text=text)]) for text in texts if _normalize_text(text)]
+            row.cells.append(HwpTableCellModel(paragraphs=paragraphs))
+        if row.cells:
+            table.rows.append(row)
+    return table
+
+
+def _extract_paragraph_texts(parent: ET.Element) -> list[str]:
+    texts: list[str] = []
+    for elem in parent.iter():
+        if _local_name(elem.tag) in {'p', 'paragraph'}:
+            normalized = _normalize_text(_collect_text(elem))
+            if normalized:
+                texts.append(normalized)
+    if texts:
+        return texts
+    fallback = _normalize_text(_collect_text(parent))
+    return [fallback] if fallback else []
+
+
+def _collect_text(elem: ET.Element) -> str:
+    parts = [text.strip() for text in elem.itertext() if text and text.strip()]
+    return ' '.join(parts)
+
+
+def _normalize_text(text: str) -> str:
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def _local_name(tag: str) -> str:
+    return tag.rsplit('}', 1)[-1].lower()
