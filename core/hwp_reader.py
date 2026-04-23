@@ -54,6 +54,8 @@ def _load_hwpx_document(path: Path, source) -> HwpDocumentModel:
             if not pages:
                 continue
             model.pages.extend(pages)
+    if source.page_count_hint and len(model.pages) == 1:
+        model.pages = _rebalance_pages(model.pages, source.page_count_hint, page_size)
     if not model.pages:
         empty_para = HwpParagraphModel(runs=[HwpParagraphRun(text='(빈 HWPX 문서)')])
         model.pages.append(
@@ -82,6 +84,8 @@ def _load_hwp_document(path: Path, source) -> HwpDocumentModel:
             extracted = _extract_hwp_body_texts(ole)
             if extracted:
                 model.pages.extend(_text_to_pages('\n\n'.join(extracted), page_size))
+    if source.page_count_hint and len(model.pages) == 1:
+        model.pages = _rebalance_pages(model.pages, source.page_count_hint, page_size)
     if not model.pages:
         model.pages.append(
             HwpPageModel(
@@ -240,10 +244,14 @@ def _extract_hwpx_pages(raw_xml: bytes, page_size: HwpPageSize) -> list[HwpPageM
             if table.rows:
                 append_table(table)
             continue
-        if local in {'br', 'break'} and (elem.attrib.get('type', '').lower() == 'page' or 'page' in ''.join(elem.attrib.values()).lower()):
+        attr_blob = ' '.join(f'{key}={value}' for key, value in elem.attrib.items()).lower()
+        if local in {'br', 'break'} and ('page' in attr_blob):
             flush_page()
             continue
-        if local in {'pagebreak', 'pagebreakline', 'lastrenderedpagebreak'}:
+        if local in {'pagebreak', 'pagebreakline', 'lastrenderedpagebreak', 'colpagebreak', 'sectionbreak'}:
+            flush_page()
+            continue
+        if 'pagebreak' in local or 'renderedpagebreak' in local:
             flush_page()
             continue
         if local in {'p', 'paragraph'}:
@@ -294,3 +302,32 @@ def _normalize_text(text: str) -> str:
 
 def _local_name(tag: str) -> str:
     return tag.rsplit('}', 1)[-1].lower()
+
+
+def _rebalance_pages(pages: list[HwpPageModel], target_count: int, page_size: HwpPageSize) -> list[HwpPageModel]:
+    if not pages or target_count <= len(pages):
+        return pages
+    paragraphs: list[HwpParagraphModel] = []
+    tables: list[HwpTableModel] = []
+    blocks: list[HwpFlowBlock] = []
+    for page in pages:
+        paragraphs.extend(page.paragraphs)
+        tables.extend(page.tables)
+        blocks.extend(page.flow_blocks)
+    if not blocks:
+        blocks = [HwpFlowBlock('paragraph', para) for para in paragraphs]
+    if not blocks:
+        return pages
+    chunk_size = max(1, (len(blocks) + target_count - 1) // target_count)
+    new_pages: list[HwpPageModel] = []
+    for start in range(0, len(blocks), chunk_size):
+        chunk = blocks[start:start + chunk_size]
+        page = HwpPageModel(size=page_size, margins=HwpMargins())
+        for block in chunk:
+            page.flow_blocks.append(block)
+            if block.kind == 'paragraph':
+                page.paragraphs.append(block.payload)
+            elif block.kind == 'table':
+                page.tables.append(block.payload)
+        new_pages.append(page)
+    return new_pages or pages

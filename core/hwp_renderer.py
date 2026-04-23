@@ -6,11 +6,11 @@ from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
 from core.hwp_types import HwpDocumentModel, HwpPageModel, HwpTableModel, hwp_to_px
 
 
-def render_hwp_document_pages(model: HwpDocumentModel, dpi: float = 96.0) -> list[QImage]:
+def render_hwp_document_pages(model: HwpDocumentModel, dpi: float = 192.0) -> list[QImage]:
     return [render_hwp_page(page, dpi=dpi) for page in model.pages]
 
 
-def render_hwp_page(page: HwpPageModel, dpi: float = 96.0) -> QImage:
+def render_hwp_page(page: HwpPageModel, dpi: float = 192.0) -> QImage:
     width = max(1, int(round(hwp_to_px(page.size.width_hwp, dpi=dpi))))
     height = max(1, int(round(hwp_to_px(page.size.height_hwp, dpi=dpi))))
     image = QImage(width, height, QImage.Format_ARGB32)
@@ -33,16 +33,17 @@ def _paint_page_background(painter: QPainter, width: int, height: int) -> None:
 
 
 def _paint_page_content(painter: QPainter, page: HwpPageModel, width: int, height: int) -> None:
-    left = max(48.0, hwp_to_px(page.margins.left_hwp) or 0.0)
-    top = max(48.0, hwp_to_px(page.margins.top_hwp) or 0.0)
-    right = max(48.0, hwp_to_px(page.margins.right_hwp) or 0.0)
-    bottom = max(48.0, hwp_to_px(page.margins.bottom_hwp) or 0.0)
+    scale = width / max(1.0, page.size.width_px)
+    left = max(96.0 * scale, hwp_to_px(page.margins.left_hwp, dpi=192.0) or 0.0)
+    top = max(96.0 * scale, hwp_to_px(page.margins.top_hwp, dpi=192.0) or 0.0)
+    right = max(96.0 * scale, hwp_to_px(page.margins.right_hwp, dpi=192.0) or 0.0)
+    bottom = max(96.0 * scale, hwp_to_px(page.margins.bottom_hwp, dpi=192.0) or 0.0)
     text_rect = QRectF(left, top, max(100.0, width - left - right), max(100.0, height - top - bottom))
     painter.setPen(QColor(Qt.black))
     font = QFont('Malgun Gothic')
-    font.setPointSize(11)
+    font.setPointSizeF(20.0 * scale)
     painter.setFont(font)
-    line_height = 24.0
+    line_height = 42.0 * scale
     y = text_rect.top()
     blocks = page.flow_blocks or []
     if not blocks:
@@ -69,7 +70,7 @@ def _paint_page_content(painter: QPainter, page: HwpPageModel, width: int, heigh
             continue
         if block.kind == 'table':
             consumed = _draw_table(painter, block.payload, text_rect.left(), y, text_rect.width(), text_rect.bottom())
-            y += consumed + 12.0
+            y += consumed + (20.0 * scale)
 
 
 def _draw_table(painter: QPainter, table: HwpTableModel, x: float, y: float, max_width: float, max_bottom: float) -> float:
@@ -77,13 +78,13 @@ def _draw_table(painter: QPainter, table: HwpTableModel, x: float, y: float, max
         return 0.0
     col_count = max((len(row.cells) for row in table.rows), default=1)
     col_width = max_width / max(1, col_count)
-    row_height = 34.0
+    row_height = 58.0
     top_y = y
     pen = QPen(QColor('#6f6f6f'))
     pen.setWidth(1)
     painter.setPen(pen)
     font = QFont('Malgun Gothic')
-    font.setPointSize(10)
+    font.setPointSize(18)
     painter.setFont(font)
     for row in table.rows:
         if y + row_height > max_bottom:
@@ -97,11 +98,11 @@ def _draw_table(painter: QPainter, table: HwpTableModel, x: float, y: float, max
                 for para in cell.paragraphs
             ).strip()
             if cell_text:
-                painter.drawText(rect.adjusted(6, 4, -6, -4), int(Qt.AlignLeft | Qt.AlignVCenter | Qt.TextWordWrap), cell_text)
+                painter.drawText(rect.adjusted(12, 8, -12, -8), int(Qt.AlignLeft | Qt.AlignVCenter | Qt.TextWordWrap), cell_text)
             current_x += col_width
         y += row_height
     painter.setPen(QColor(Qt.black))
     font = QFont('Malgun Gothic')
-    font.setPointSize(11)
+    font.setPointSize(20)
     painter.setFont(font)
     return max(0.0, y - top_y)
