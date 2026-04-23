@@ -10,6 +10,9 @@ from PySide6.QtCore import QRectF
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QFileDialog, QWidget
 
+from core.hwp_reader import HwpReadError, load_hwp_document
+from core.hwp_renderer import render_hwp_document_pages
+
 
 @dataclass
 class LoadedDocument:
@@ -55,7 +58,7 @@ class DocumentLoader:
             parent,
             '문서 불러오기',
             initial_dir or '',
-            '지원 문서 (*.pdf *.doc *.docx);;PDF Files (*.pdf);;Word Files (*.doc *.docx)',
+            '지원 문서 (*.pdf *.doc *.docx *.hwp *.hwpx);;PDF Files (*.pdf);;Word Files (*.doc *.docx);;Hancom Files (*.hwp *.hwpx)',
         )
         if not paths:
             return False
@@ -84,10 +87,8 @@ class DocumentLoader:
             self._notify_progress(f'Word 문서 준비 중...\n{src.name}')
             loaded = self._open_word_family(src)
         elif ext in {'.hwp', '.hwpx'}:
-            raise RuntimeError(
-                'HWP/HWPX는 현재 내부 렌더 엔진 재구현 단계입니다.\n'
-                '이 브랜치에서는 오리지널 한글/외부 브리지를 사용하지 않습니다.'
-            )
+            self._notify_progress(f'HWP/HWPX 내부 엔진으로 준비 중...\n{src.name}')
+            loaded = self._open_hwp_family(src)
         else:
             raise ValueError(f'지원하지 않는 형식입니다: {ext}')
 
@@ -184,6 +185,18 @@ class DocumentLoader:
     def _notify_progress(self, message: str) -> None:
         if self._progress_callback is not None:
             self._progress_callback(message)
+
+    def _open_hwp_family(self, src: Path) -> LoadedDocument:
+        self._notify_progress(f'HWP/HWPX 구조 분석 중...\n{src.name}')
+        try:
+            model = load_hwp_document(src)
+        except HwpReadError as exc:
+            raise RuntimeError(f'HWP/HWPX 내부 로더가 문서를 읽지 못했습니다.\n\n실패 원인: {exc}') from exc
+        self._notify_progress(f'HWP/HWPX 페이지 렌더링 중...\n{src.name}')
+        pages = render_hwp_document_pages(model)
+        if not pages:
+            raise RuntimeError('HWP/HWPX 내부 렌더러가 페이지를 생성하지 못했습니다.')
+        return LoadedDocument(src, None, src.suffix.lower().lstrip('.'), fallback_pages=pages)
 
 
     def document_count(self) -> int:
