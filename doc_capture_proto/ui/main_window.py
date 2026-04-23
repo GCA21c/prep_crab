@@ -647,6 +647,7 @@ class MainWindow(QMainWindow):
         self.loader = DocumentLoader()
         self.clipboard_store = ClipboardStore()
         self.origin_view.loader = self.loader
+        self.origin_view.reset_view_states()
         self.clipboard_view.store = self.clipboard_store
         self.clipboard_view.reload_from_store()
         self._update_clipboard_count()

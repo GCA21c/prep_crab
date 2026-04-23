@@ -21,8 +21,12 @@ class OriginView(QWidget):
         self.page_image: QImage | None = None
         self.render_scale = 2.0
         self.capture_output_scale = 3.0
-        self.view_scale = 0.45
-        self.pan = QPointF(0, 0)
+        self.default_view_scale = 0.45
+        self.default_pan = QPointF(0, 0)
+        self.view_scale = self.default_view_scale
+        self.pan = QPointF(self.default_pan)
+        self.page_view_states: dict[tuple[int, int], dict[str, float]] = {}
+        self._last_view_key: tuple[int, int] | None = None
         self.capture_rect = QRectF(80, 80, 320, 220)
         self.dragging_capture = False
         self.resizing_capture = False
@@ -48,7 +52,9 @@ class OriginView(QWidget):
         self.setFocusPolicy(Qt.StrongFocus)
 
     def refresh(self) -> None:
+        self._save_current_view_state()
         self.page_image = self.loader.render_current_page(scale=self.render_scale)
+        self._restore_current_view_state()
         self._reset_pan_if_needed()
         if self.page_image is None:
             self._live_timer.stop()
@@ -62,6 +68,46 @@ class OriginView(QWidget):
 
     def _mark_capture_changed(self) -> None:
         self._capture_revision += 1
+
+    def _current_view_key(self) -> tuple[int, int] | None:
+        if not self.loader.has_document():
+            return None
+        return (int(self.loader.doc_index), int(self.loader.page_index))
+
+    def _save_current_view_state(self) -> None:
+        key = self._last_view_key if self._last_view_key is not None else self._current_view_key()
+        if key is None:
+            return
+        self.page_view_states[key] = {
+            'view_scale': float(self.view_scale),
+            'pan_x': float(self.pan.x()),
+            'pan_y': float(self.pan.y()),
+        }
+
+    def _restore_current_view_state(self) -> None:
+        key = self._current_view_key()
+        self._last_view_key = key
+        if key is None:
+            self.view_scale = self.default_view_scale
+            self.pan = QPointF(self.default_pan)
+            return
+        state = self.page_view_states.get(key)
+        if state is None:
+            self.view_scale = self.default_view_scale
+            self.pan = QPointF(self.default_pan)
+            return
+        self.view_scale = float(state.get('view_scale', self.default_view_scale))
+        self.pan = QPointF(
+            float(state.get('pan_x', self.default_pan.x())),
+            float(state.get('pan_y', self.default_pan.y())),
+        )
+
+    def reset_view_states(self) -> None:
+        self.page_view_states.clear()
+        self._last_view_key = None
+        self.view_scale = self.default_view_scale
+        self.pan = QPointF(self.default_pan)
+        self.update()
 
     def _reset_pan_if_needed(self) -> None:
         if self.page_image is None:
@@ -79,6 +125,7 @@ class OriginView(QWidget):
         self.view_scale = new_scale
         self.pan = QPointF(image_x * new_scale - float(pos.x()), image_y * new_scale - float(pos.y()))
         self._reset_pan_if_needed()
+        self._save_current_view_state()
         self._schedule_live_preview()
         self.update()
 
@@ -193,9 +240,10 @@ class OriginView(QWidget):
             self.do_capture(force=False)
             return
         if event.button() == Qt.LeftButton:
-            self.view_scale = 0.45
-            self.pan = QPointF(0, 0)
+            self.view_scale = self.default_view_scale
+            self.pan = QPointF(self.default_pan)
             self._reset_pan_if_needed()
+            self._save_current_view_state()
             self._schedule_live_preview()
             self.update()
             return
@@ -228,6 +276,7 @@ class OriginView(QWidget):
             self.pan -= QPointF(delta.x(), delta.y())
             self._reset_pan_if_needed()
             self.last_pos = pos
+            self._save_current_view_state()
             self._schedule_live_preview()
             self.update()
             return

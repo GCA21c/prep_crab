@@ -523,6 +523,10 @@ class HereView(QWidget):
             self._save_current_view_state()
             self.update()
             return
+        if self.space_pressed:
+            self.setCursor(Qt.OpenHandCursor)
+            if self.selected_index < 0:
+                return
         if self.selected_index < 0:
             return
         block = self.blocks[self.selected_index]
@@ -592,7 +596,7 @@ class HereView(QWidget):
             self.setCursor(Qt.SizeFDiagCursor)
         elif self._block_rect_view(block).contains(pos):
             self.setCursor(Qt.SizeAllCursor)
-        elif self.space_pressed or self.middle_panning:
+        elif self.middle_panning:
             self.setCursor(Qt.OpenHandCursor)
         else:
             self.unsetCursor()
@@ -677,7 +681,8 @@ class HereView(QWidget):
         if event.key() == Qt.Key_Space:
             if not event.isAutoRepeat():
                 self.space_pressed = False
-                self.unsetCursor()
+                if not self.dragging_block and not self.resizing_block and not self.panning:
+                    self.unsetCursor()
             return
         super().keyReleaseEvent(event)
 
