@@ -142,8 +142,16 @@ class OriginView(QWidget):
             self._trigger_flash()
             self.capture_ready.emit(maybe_trim(cropped, enabled=True, margin_px=3))
 
-    def _resize_handle_rect(self) -> QRectF:
-        return QRectF(self.capture_rect.right() - 14, self.capture_rect.bottom() - 14, 14, 14)
+    def _resize_handle_visual_rect(self) -> QRectF:
+        dot_size = 8.0
+        return QRectF(self.capture_rect.right() - dot_size, self.capture_rect.bottom() - dot_size, dot_size, dot_size)
+
+    def _resize_handle_hit_rect(self) -> QRectF:
+        visual = self._resize_handle_visual_rect()
+        center = visual.center()
+        hit_size = 14.0
+        half = hit_size / 2.0
+        return QRectF(center.x() - half, center.y() - half, hit_size, hit_size)
 
     def wheelEvent(self, event) -> None:
         self.interaction_started.emit('origin')
@@ -203,7 +211,7 @@ class OriginView(QWidget):
             self.panning = True
             self.setCursor(Qt.ClosedHandCursor)
             return
-        if self._resize_handle_rect().contains(event.position()):
+        if self._resize_handle_hit_rect().contains(event.position()):
             self.resizing_capture = True
         elif self.capture_rect.contains(event.position()):
             self.dragging_capture = True
@@ -239,7 +247,7 @@ class OriginView(QWidget):
             return
         if self.space_pressed:
             self.setCursor(Qt.OpenHandCursor)
-        elif self._resize_handle_rect().contains(pos):
+        elif self._resize_handle_hit_rect().contains(pos):
             self.setCursor(Qt.SizeFDiagCursor)
         elif self.capture_rect.contains(pos):
             self.setCursor(Qt.SizeAllCursor)
@@ -271,4 +279,6 @@ class OriginView(QWidget):
         painter.fillRect(self.capture_rect, fill)
         painter.setPen(border)
         painter.drawRect(self.capture_rect)
-        painter.fillRect(self._resize_handle_rect(), QColor('#4f8df5') if not self._flash_on else QColor('#f3b300'))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor('#d12c2c'))
+        painter.drawEllipse(self._resize_handle_visual_rect())
