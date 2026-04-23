@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QSplitter,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -84,9 +83,6 @@ class MainWindow(QMainWindow):
         self.project_store = ProjectStore()
         self.active_panel = 'origin'
         self.undo_stack: list[dict] = []
-        self._adjusting_splitter = False
-        self._last_splitter_sizes = [580, 420, 580]
-        self.content_splitter: QSplitter | None = None
 
         self.origin_view = OriginView(self.loader)
         self.clipboard_view = ClipboardView(self.clipboard_store)
@@ -129,7 +125,7 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(9, 9, 9, 9)
         root.setSpacing(8)
         root.addLayout(self._build_top_buttons())
-        root.addWidget(self._build_content(), 1)
+        root.addLayout(self._build_content(), 1)
         self._set_active_panel('origin')
         self._update_doc_slots()
         self._update_clipboard_count()
@@ -171,24 +167,17 @@ class MainWindow(QMainWindow):
         self.btn_load_set.clicked.connect(self._load_project)
         return layout
 
-    def _build_content(self) -> QSplitter:
+    def _build_content(self):
         self.origin_header = PanelHeader('ORIGIN', self.doc_slots_label, self.btn_close_doc)
         self.clipboard_header = PanelHeader('CAPTURE BLOCKS', self.clipboard_count_label)
         self.here_header = PanelHeader('HERE', self.here_slots_label)
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(8)
-        splitter.addWidget(self._build_panel_column(self.origin_header, self.origin_view))
-        splitter.addWidget(self._build_panel_column(self.clipboard_header, self.clipboard_view))
-        splitter.addWidget(self._build_panel_column(self.here_header, self.here_view))
-        splitter.setStretchFactor(0, 4)
-        splitter.setStretchFactor(1, 3)
-        splitter.setStretchFactor(2, 4)
-        splitter.setSizes([580, 420, 580])
-        splitter.splitterMoved.connect(self._on_content_splitter_moved)
-        self._last_splitter_sizes = splitter.sizes()
-        self.content_splitter = splitter
-        return splitter
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(9)
+        layout.addWidget(self._build_panel_column(self.origin_header, self.origin_view), 4)
+        layout.addWidget(self._build_panel_column(self.clipboard_header, self.clipboard_view), 3)
+        layout.addWidget(self._build_panel_column(self.here_header, self.here_view), 4)
+        return layout
 
     def _build_panel_column(self, header: QWidget, body: QWidget) -> QWidget:
         panel = QWidget()
@@ -200,60 +189,6 @@ class MainWindow(QMainWindow):
         panel.setMinimumWidth(180)
         panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         return panel
-
-    def _distribute_splitter_space(self, total: int, indices: list[int]) -> dict[int, int]:
-        minimums = {
-            idx: max(1, self.content_splitter.widget(idx).minimumWidth())  # type: ignore[union-attr]
-            for idx in indices
-        }
-        weights = {
-            idx: max(1, self._last_splitter_sizes[idx])
-            for idx in indices
-        }
-        remaining_total = max(total, sum(minimums.values()))
-        allocations = minimums.copy()
-        free_space = max(0, remaining_total - sum(minimums.values()))
-        weight_sum = sum(weights.values()) or 1
-        assigned = 0
-        for idx in indices[:-1]:
-            extra = round(free_space * weights[idx] / weight_sum)
-            allocations[idx] += extra
-            assigned += extra
-        allocations[indices[-1]] += max(0, free_space - assigned)
-        return allocations
-
-    def _on_content_splitter_moved(self, pos: int, index: int) -> None:
-        if self._adjusting_splitter:
-            return
-        splitter = self.content_splitter
-        if splitter is None:
-            return
-        sizes = splitter.sizes()
-        if len(sizes) != 3:
-            self._last_splitter_sizes = sizes
-            return
-        total = sum(sizes)
-        if index == 1:
-            target_idx = 0
-            other_indices = [1, 2]
-        elif index == 2:
-            target_idx = 2
-            other_indices = [0, 1]
-        else:
-            self._last_splitter_sizes = sizes
-            return
-        target_size = sizes[target_idx]
-        allocations = self._distribute_splitter_space(total - target_size, other_indices)
-        new_sizes = sizes[:]
-        new_sizes[target_idx] = target_size
-        for idx in other_indices:
-            new_sizes[idx] = allocations[idx]
-        self._adjusting_splitter = True
-        try:
-            splitter.setSizes(new_sizes)
-        finally:
-            self._adjusting_splitter = False
-        self._last_splitter_sizes = splitter.sizes()
 
     def _snapshot_state(self) -> dict:
         clipboard_items = [
