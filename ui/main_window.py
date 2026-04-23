@@ -264,20 +264,26 @@ class MainWindow(QMainWindow):
         self.btn_origin_prev_page = QPushButton('<')
         self.btn_origin_next_page = QPushButton('>')
         self.btn_origin_next_doc = QPushButton('>>')
+        self.btn_origin_reset_view = QPushButton('⟳')
+        self.btn_origin_reset_view.setFixedWidth(26)
         self.btn_origin_prev_doc.clicked.connect(self._prev_doc)
         self.btn_origin_prev_page.clicked.connect(self._prev_origin_page)
         self.btn_origin_next_page.clicked.connect(self._next_origin_page)
         self.btn_origin_next_doc.clicked.connect(self._next_doc)
+        self.btn_origin_reset_view.clicked.connect(self._reset_origin_view)
 
         self.btn_here_prev_page = QPushButton('<')
         self.btn_here_next_page = QPushButton('>')
         self.btn_here_add_page = QPushButton('+')
+        self.btn_here_reset_view = QPushButton('⟳')
+        self.btn_here_reset_view.setFixedWidth(26)
         self.btn_here_del_page = QPushButton('x')
         self.btn_here_del_page.setFixedWidth(24)
         self.btn_here_del_page.setStyleSheet(self.btn_close_doc.styleSheet())
         self.btn_here_prev_page.clicked.connect(self._prev_here_page)
         self.btn_here_next_page.clicked.connect(self._next_here_page)
         self.btn_here_add_page.clicked.connect(self._add_here_page)
+        self.btn_here_reset_view.clicked.connect(self._reset_here_view)
         self.btn_here_del_page.clicked.connect(self._confirm_delete_here_page)
 
         self.origin_header = PanelHeader('ORIGIN', self.doc_slots_label)
@@ -288,12 +294,14 @@ class MainWindow(QMainWindow):
             self.btn_origin_prev_page,
             self.btn_origin_next_page,
             self.btn_origin_next_doc,
+            self.btn_origin_reset_view,
             self.btn_close_doc,
         ])
         self.here_controls = PanelControls([
             self.btn_here_prev_page,
             self.btn_here_next_page,
             self.btn_here_add_page,
+            self.btn_here_reset_view,
             self.btn_here_del_page,
         ])
         self.origin_panel = PanelColumn(self.origin_header, self.origin_controls, self.origin_view)
@@ -579,6 +587,9 @@ class MainWindow(QMainWindow):
         self.loader.next_page()
         self.origin_view.refresh()
 
+    def _reset_origin_view(self) -> None:
+        self.origin_view.reset_view()
+
     def _prev_here_page(self) -> None:
         self.here_view.prev_page()
         self._update_here_slots()
@@ -590,6 +601,9 @@ class MainWindow(QMainWindow):
     def _add_here_page(self) -> None:
         self.here_view.add_page()
         self._update_here_slots()
+
+    def _reset_here_view(self) -> None:
+        self.here_view.reset_view()
 
     def _confirm_delete_here_page(self) -> None:
         reply = QMessageBox.question(self, 'HERE 페이지 삭제', '현재 HERE 페이지를 삭제하시겠습니까?')

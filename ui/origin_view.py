@@ -135,6 +135,14 @@ class OriginView(QWidget):
     def zoom_out(self) -> None:
         self._zoom_at(QPointF(self.width() / 2, self.height() / 2), 1 / 1.15)
 
+    def reset_view(self) -> None:
+        self.view_scale = self.default_view_scale
+        self.pan = QPointF(self.default_pan)
+        self._reset_pan_if_needed()
+        self._save_current_view_state()
+        self._schedule_live_preview()
+        self.update()
+
     def _image_draw_rect(self) -> QRectF:
         if self.page_image is None:
             return QRectF()
@@ -240,12 +248,7 @@ class OriginView(QWidget):
             self.do_capture(force=False)
             return
         if event.button() == Qt.LeftButton:
-            self.view_scale = self.default_view_scale
-            self.pan = QPointF(self.default_pan)
-            self._reset_pan_if_needed()
-            self._save_current_view_state()
-            self._schedule_live_preview()
-            self.update()
+            self.reset_view()
             return
         super().mouseDoubleClickEvent(event)
 
