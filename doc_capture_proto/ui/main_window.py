@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QIcon, QKeySequence
+from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -90,7 +90,6 @@ class PanelControls(QWidget):
 class PanelColumn(QWidget):
     def __init__(self, header: QWidget, controls: QWidget | None, body: QWidget) -> None:
         super().__init__()
-        self.setAttribute(Qt.WA_StyledBackground, True)
         self._active = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -101,25 +100,21 @@ class PanelColumn(QWidget):
         layout.addWidget(body, 1)
         self.setMinimumWidth(180)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self._apply_background()
 
     def set_active(self, active: bool) -> None:
         self._active = active
-        self._apply_background()
+        self.update()
 
-    def _apply_background(self) -> None:
-        if self._active:
-            self.setStyleSheet(
-                'background:#e8edf4;'
-                'border:1px solid #cfd8e3;'
-                'border-radius:10px;'
-            )
-        else:
-            self.setStyleSheet(
-                'background:#dfe5ec;'
-                'border:1px solid #c7d1dc;'
-                'border-radius:10px;'
-            )
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        rect = self.rect().adjusted(0, 0, -1, -1)
+        fill = QColor('#d8e0e8') if self._active else QColor('#cfd7e0')
+        border = QColor('#bcc7d2') if self._active else QColor('#b4c0cc')
+        painter.setPen(QPen(border, 1))
+        painter.setBrush(fill)
+        painter.drawRoundedRect(rect, 10, 10)
+        super().paintEvent(event)
 
 
 class BusyOverlay(QWidget):
@@ -150,9 +145,9 @@ class BusyOverlay(QWidget):
         card_layout.setSpacing(10)
 
         self.title_label = QLabel('작업 중')
-        self.title_label.setStyleSheet('color:#ffffff; font-size:16px; font-weight:700;')
+        self.title_label.setStyleSheet('color:#ffffff; background:transparent; font-size:16px; font-weight:700;')
         self.detail_label = QLabel('')
-        self.detail_label.setStyleSheet('color:#d4dbe3; font-size:13px;')
+        self.detail_label.setStyleSheet('color:#d4dbe3; background:transparent; font-size:13px;')
         self.detail_label.setWordWrap(True)
         self.detail_label.setAlignment(Qt.AlignCenter)
 
