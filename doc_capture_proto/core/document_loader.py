@@ -27,6 +27,7 @@ class DocumentLoader:
         self.loaded_documents: list[LoadedDocument] = []
         self.doc_index: int = -1
         self.page_index: int = 0
+        self._last_word_error: str = ''
         self._temp_dir = Path(tempfile.mkdtemp(prefix='doc_capture_source_'))
         try:
             fitz.TOOLS.mupdf_display_warnings(False)
@@ -77,34 +78,68 @@ class DocumentLoader:
         return True
 
     def _open_word_family(self, src: Path) -> LoadedDocument:
+        self._last_word_error = ''
         pdf_doc = self._open_word_via_pdf_bridge(src)
         if pdf_doc is not None:
             return LoadedDocument(src, pdf_doc, src.suffix.lower().lstrip('.'))
+        details = f'\n\n실패 원인: {self._last_word_error}' if self._last_word_error else ''
         raise RuntimeError(
             'DOC/DOCX는 Microsoft Word가 설치된 Windows 환경에서만 지원합니다.\n'
             '현재는 Word COM PDF 변환에 실패했습니다.'
+            f'{details}'
         )
 
 
     def _open_word_via_pdf_bridge(self, src: Path) -> fitz.Document | None:
+        resolved_src = src.expanduser().resolve()
         try:
             import pythoncom  # type: ignore
             import win32com.client  # type: ignore
-        except Exception:
+        except Exception as exc:
+            self._last_word_error = f'pywin32 import 실패: {exc}'
             return None
         word = None
         doc = None
         try:
             pythoncom.CoInitialize()
-            word = win32com.client.DispatchEx('Word.Application')
+            try:
+                word = win32com.client.Dispatch('Word.Application')
+            except Exception:
+                word = win32com.client.DispatchEx('Word.Application')
             word.Visible = False
             word.DisplayAlerts = 0
-            doc = word.Documents.Open(str(src), ReadOnly=True)
-            out_pdf = self._temp_dir / f'{src.stem}_{len(self.loaded_documents)+1}.pdf'
-            doc.ExportAsFixedFormat(str(out_pdf), 17)
-            if out_pdf.exists():
+            doc = word.Documents.Open(
+                FileName=str(resolved_src),
+                ConfirmConversions=False,
+                ReadOnly=True,
+                AddToRecentFiles=False,
+                Revert=False,
+                NoEncodingDialog=True,
+                OpenAndRepair=True,
+            )
+            out_pdf = self._temp_dir / f'{resolved_src.stem}_{len(self.loaded_documents)+1}.pdf'
+            try:
+                if out_pdf.exists():
+                    out_pdf.unlink()
+            except Exception:
+                pass
+            try:
+                doc.ExportAsFixedFormat(
+                    OutputFileName=str(out_pdf),
+                    ExportFormat=17,
+                    OpenAfterExport=False,
+                    OptimizeFor=0,
+                    Range=0,
+                    Item=0,
+                    CreateBookmarks=1,
+                )
+            except Exception:
+                doc.SaveAs(str(out_pdf), FileFormat=17)
+            if out_pdf.exists() and out_pdf.stat().st_size > 0:
                 return fitz.open(str(out_pdf))
-        except Exception:
+            self._last_word_error = 'Word가 PDF 파일을 생성하지 않았습니다.'
+        except Exception as exc:
+            self._last_word_error = str(exc)
             return None
         finally:
             try:
