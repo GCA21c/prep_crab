@@ -432,12 +432,13 @@ class HereView(QWidget):
         self.setFocus()
         self.drag_last = event.position()
         ctrl_pressed = bool(event.modifiers() & Qt.ControlModifier)
+        select_button = event.button() == Qt.LeftButton or (ctrl_pressed and event.button() == Qt.RightButton)
         if event.button() == Qt.MiddleButton:
             self.middle_panning = True
             self.panning = True
             self.setCursor(Qt.ClosedHandCursor)
             return
-        if event.button() != Qt.LeftButton:
+        if not select_button:
             return
         pos = event.position()
         if self.space_pressed:

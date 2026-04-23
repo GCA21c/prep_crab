@@ -120,7 +120,6 @@ HERE
         self._passive_selection = False
         self.list_widget.currentRowChanged.connect(self._on_row_changed)
         self.list_widget.itemDoubleClicked.connect(self._on_double_clicked)
-        self.saved_preview.double_clicked.connect(self._on_saved_preview_double_clicked)
         self.list_widget.installEventFilter(self)
 
         layout = QVBoxLayout(self)
@@ -237,8 +236,4 @@ HERE
     def _on_double_clicked(self, item: QListWidgetItem) -> None:
         self.interaction_started.emit('clipboard')
         row = self.list_widget.row(item)
-        self._open_rename_dialog(row)
-
-    def _on_saved_preview_double_clicked(self, image: QImage, row: int) -> None:
-        self.interaction_started.emit('clipboard')
         self._open_rename_dialog(row)
