@@ -1,0 +1,14 @@
+PySide6
+PyMuPDF
+Pillow
+reportlab
+python-docx
+olefile
+mammoth
+pywin32; platform_system == "Windows"
+simple-hwp2pdf
+gethwp
+python-hwpx
+pyhwpx
+helper-hwp
+textract

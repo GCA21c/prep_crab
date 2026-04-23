@@ -1,0 +1,378 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeySequence
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
+
+from doc_capture_proto.core.clipboard_store import ClipboardItem, ClipboardStore
+from doc_capture_proto.core.document_loader import DocumentLoader
+from doc_capture_proto.core.pdf_exporter import PdfExporter
+from doc_capture_proto.core.project_store import ProjectStore
+from doc_capture_proto.ui.clipboard_view import ClipboardView
+from doc_capture_proto.ui.here_view import HereView
+from doc_capture_proto.ui.origin_view import OriginView
+
+
+class LampLabel(QWidget):
+    def __init__(self, title: str) -> None:
+        super().__init__()
+        self.layout = QHBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSpacing(6)
+        self.lamp = QLabel('●')
+        self.text = QLabel(title)
+        font = self.text.font()
+        font.setBold(True)
+        self.text.setFont(font)
+        self.layout.addWidget(self.lamp)
+        self.layout.addWidget(self.text)
+        self.layout.addStretch(1)
+        self.set_active(False)
+
+    def set_active(self, active: bool) -> None:
+        if active:
+            self.lamp.setStyleSheet('color:#18a34a; font-size:16px;')
+            self.text.setStyleSheet('color:#103a6a;')
+        else:
+            self.lamp.setStyleSheet('color:#9aa3ad; font-size:16px;')
+            self.text.setStyleSheet('color:#4d5c6b;')
+
+
+class MainWindow(QMainWindow):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle('문서 캡쳐 · 이식 · PDF 생성 프로토타입')
+        self.resize(1600, 950)
+
+        self.loader = DocumentLoader()
+        self.clipboard_store = ClipboardStore()
+        self.pdf_exporter = PdfExporter()
+        self.project_store = ProjectStore()
+        self.active_panel = 'origin'
+        self.undo_stack: list[dict] = []
+
+        self.origin_view = OriginView(self.loader)
+        self.clipboard_view = ClipboardView(self.clipboard_store)
+        self.here_view = HereView()
+        self.doc_slots_label = QLabel('-')
+        self.doc_slots_label.setStyleSheet('color:#ffffff; font-weight:700; padding:0 8px; font-size:14px;')
+        self.doc_slots_label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        self.btn_close_doc = QPushButton('x')
+        self.btn_close_doc.setFixedWidth(24)
+        self.btn_close_doc.setStyleSheet('QPushButton {color:#ffffff; background:#8a2d2d; border:1px solid #7a1f1f; border-radius:3px; font-weight:700;} QPushButton:hover {background:#a23636;}')
+        self.btn_close_doc.clicked.connect(self._close_current_doc)
+
+        self.origin_view.capture_ready.connect(self._add_capture)
+        self.origin_view.live_preview_changed.connect(self.clipboard_view.set_live_preview)
+        self.clipboard_view.send_to_here.connect(self._send_clipboard_to_here)
+        self.clipboard_view.saved_preview.drag_started.connect(self.here_view.set_pending_drag_image)
+        self.clipboard_view.delete_requested.connect(self._delete_clipboard_index)
+        self.here_view.clipboard_index_selected.connect(lambda idx: self.clipboard_view.set_selected_index(idx, passive=True))
+        self.here_view.delete_requested.connect(self._delete_here_block_index)
+        self.here_view.history_checkpoint_requested.connect(self._push_undo_state)
+        self.here_view.duplicate_to_clipboard_requested.connect(self._duplicate_here_selection)
+
+        self.origin_view.interaction_started.connect(self._set_active_panel)
+        self.clipboard_view.interaction_started.connect(self._set_active_panel)
+        self.here_view.interaction_started.connect(self._set_active_panel)
+        self.origin_view.page_wheel_requested.connect(self._on_origin_page_wheel)
+        self.origin_view.file_wheel_requested.connect(self._on_origin_file_wheel)
+        self.here_view.page_wheel_requested.connect(self._on_here_page_wheel)
+
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
+        root.addLayout(self._build_top_buttons())
+        root.addLayout(self._build_titles())
+        root.addLayout(self._build_content())
+        self._set_active_panel('origin')
+        self._update_doc_slots()
+
+    def _build_top_buttons(self):
+        layout = QHBoxLayout()
+        self.btn_load_set = QPushButton('불러오기')
+        self.btn_load_doc = QPushButton('문서불러오기')
+        self.btn_save = QPushButton('SET Save')
+        self.btn_reset = QPushButton('새로고침')
+        self.btn_prev_doc = QPushButton('<<')
+        self.btn_prev_page = QPushButton('<')
+        self.btn_next_page = QPushButton('>')
+        self.btn_next_doc = QPushButton('>>')
+        self.btn_capture = QPushButton('capture')
+        self.btn_here_add_page = QPushButton('HERE +PAGE')
+        self.btn_here_del_page = QPushButton('HERE -PAGE')
+        self.btn_pdf = QPushButton('PDF OUTPUT')
+
+        for w in [
+            self.btn_load_set, self.btn_load_doc, self.btn_save, self.btn_reset,
+            self.btn_prev_doc, self.btn_prev_page, self.btn_next_page, self.btn_next_doc,
+            self.btn_capture, self.btn_here_add_page, self.btn_here_del_page, self.btn_pdf,
+        ]:
+            layout.addWidget(w)
+
+        self.btn_load_doc.clicked.connect(self._load_doc)
+        self.btn_prev_doc.clicked.connect(self._prev_doc)
+        self.btn_next_doc.clicked.connect(self._next_doc)
+        self.btn_prev_page.clicked.connect(self._prev_page)
+        self.btn_next_page.clicked.connect(self._next_page)
+        self.btn_capture.clicked.connect(self.origin_view.do_capture)
+        self.btn_here_add_page.clicked.connect(self.here_view.add_page)
+        self.btn_here_del_page.clicked.connect(self.here_view.delete_current_page)
+        self.btn_pdf.clicked.connect(self._export_pdf)
+        self.btn_reset.clicked.connect(self._reset_all)
+        self.btn_save.clicked.connect(self._save_project)
+        self.btn_load_set.clicked.connect(self._load_project)
+        return layout
+
+    def _build_titles(self):
+        layout = QGridLayout()
+        self.origin_title = LampLabel('ORIGIN')
+        self.clipboard_title = LampLabel('CLIPBOARD')
+        self.here_title = LampLabel('HERE')
+        self.origin_title.layout.insertWidget(2, self.doc_slots_label)
+        self.origin_title.layout.addWidget(self.btn_close_doc)
+        layout.addWidget(self.origin_title, 0, 0)
+        layout.addWidget(self.clipboard_title, 0, 1)
+        layout.addWidget(self.here_title, 0, 2)
+        return layout
+
+    def _build_content(self):
+        layout = QHBoxLayout()
+        layout.addWidget(self.origin_view, 4)
+        layout.addWidget(self.clipboard_view, 3)
+        layout.addWidget(self.here_view, 4)
+        return layout
+
+    def _snapshot_state(self) -> dict:
+        clipboard_items = [
+            ClipboardItem(number=item.number, timestamp=item.timestamp, image=item.image.copy())
+            for item in self.clipboard_store.items
+        ]
+        pages: list[list[dict]] = []
+        for page in self.here_view.pages:
+            page_blocks: list[dict] = []
+            for block in page:
+                page_blocks.append({
+                    'image': block['image'].copy(),
+                    'x': float(block['x']),
+                    'y': float(block['y']),
+                    'w': float(block['w']),
+                    'h': float(block['h']),
+                    'original_w': float(block.get('original_w', block['image'].width())),
+                    'original_h': float(block.get('original_h', block['image'].height())),
+                    'source_index': int(block.get('source_index', -1)),
+                    'content_left': float(block.get('content_left', 0.0)),
+                    'content_right': float(block.get('content_right', block.get('original_w', block['image'].width()) - 1)),
+                })
+                if 'temp_path' in block:
+                    page_blocks[-1]['temp_path'] = block['temp_path']
+            pages.append(page_blocks)
+        return {
+            'clipboard_items': clipboard_items,
+            'clipboard_current_index': self.clipboard_store.current_index,
+            'here_pages': pages,
+            'here_current_page': self.here_view.current_page_index,
+            'here_selected_index': self.here_view.selected_index,
+        }
+
+    def _restore_snapshot(self, snap: dict) -> None:
+        self.clipboard_store.replace_all(snap['clipboard_items'])
+        self.clipboard_store.current_index = snap.get('clipboard_current_index', self.clipboard_store.current_index)
+        self.clipboard_view.reload_from_store()
+        self.here_view.restore_pages(snap['here_pages'])
+        self.here_view.current_page_index = min(max(0, snap.get('here_current_page', 0)), len(self.here_view.pages) - 1)
+        self.here_view.selected_index = snap.get('here_selected_index', -1)
+        self.here_view._emit_selected_clipboard_index()
+        self.here_view.update()
+
+    def _push_undo_state(self) -> None:
+        self.undo_stack.append(self._snapshot_state())
+        if len(self.undo_stack) > 50:
+            self.undo_stack.pop(0)
+
+    def _undo(self) -> None:
+        if not self.undo_stack:
+            return
+        self._restore_snapshot(self.undo_stack.pop())
+
+    def keyPressEvent(self, event) -> None:
+        if event.matches(QKeySequence.Undo):
+            self._undo()
+            return
+        super().keyPressEvent(event)
+
+    def _set_active_panel(self, panel_name: str) -> None:
+        self.active_panel = panel_name
+        self.origin_title.set_active(panel_name == 'origin')
+        self.clipboard_title.set_active(panel_name == 'clipboard')
+        self.here_title.set_active(panel_name == 'here')
+
+    def _update_doc_slots(self) -> None:
+        total = len(self.loader.loaded_documents)
+        if total <= 0:
+            self.doc_slots_label.setText('-')
+            self.btn_close_doc.setEnabled(False)
+            return
+        current = self.loader.doc_index
+        slots = ''.join('■' if i == current else '□' for i in range(total))
+        self.doc_slots_label.setText(f'{slots}   ({current + 1}/{total})')
+        self.btn_close_doc.setEnabled(True)
+
+    def _load_doc(self) -> None:
+        try:
+            loaded = self.loader.open_file_dialog(self)
+            if loaded:
+                self.origin_view.refresh()
+                self._update_doc_slots()
+        except Exception as exc:
+            QMessageBox.critical(self, '문서 로드 오류', str(exc))
+
+    def _add_capture(self, image) -> None:
+        self._push_undo_state()
+        item = self.clipboard_store.add(image)
+        self.clipboard_view.add_item(item)
+        self._set_active_panel('clipboard')
+
+    def _send_clipboard_to_here(self, image, row: int) -> None:
+        self._push_undo_state()
+        self.here_view.add_block(image, row)
+
+    def _duplicate_here_selection(self, image, offset_info) -> None:
+        self._push_undo_state()
+        item = self.clipboard_store.add(image)
+        self.clipboard_view.add_item(item)
+        x = None
+        y = None
+        if 0 <= self.here_view.selected_index < len(self.here_view.blocks):
+            selected = self.here_view.blocks[self.here_view.selected_index]
+            x = float(selected['x']) + float(offset_info.get('x_offset', 24.0))
+            y = float(selected['y']) + float(offset_info.get('y_offset', 24.0))
+        self.here_view.add_block(image, len(self.clipboard_store.items) - 1, x=x, y=y)
+        self._set_active_panel('here')
+
+    def _delete_here_block_index(self, index: int) -> None:
+        self.here_view.delete_block_at(index)
+
+    def _delete_clipboard_index(self, index: int) -> None:
+        if not (0 <= index < len(self.clipboard_store.items)):
+            return
+        self._push_undo_state()
+        removed = self.clipboard_store.delete(index)
+        if removed is None:
+            return
+        self.here_view.delete_blocks_by_source_index(index)
+        self.clipboard_view.reload_from_store()
+        self.here_view.adjust_source_indices_after_clipboard_delete(index)
+
+    def _on_origin_page_wheel(self, direction: int) -> None:
+        if direction < 0:
+            self.loader.prev_page()
+        else:
+            self.loader.next_page()
+        self.origin_view.refresh()
+
+    def _on_origin_file_wheel(self, direction: int) -> None:
+        if direction < 0:
+            self._prev_doc()
+        else:
+            self._next_doc()
+
+    def _on_here_page_wheel(self, direction: int) -> None:
+        if direction < 0:
+            self.here_view.prev_page()
+        else:
+            self.here_view.next_page()
+
+    def _close_current_doc(self) -> None:
+        if self.loader.close_current_document():
+            self.origin_view.refresh()
+            self._update_doc_slots()
+
+    def _prev_doc(self) -> None:
+        self.loader.prev_document()
+        self.origin_view.refresh()
+        self._update_doc_slots()
+
+    def _next_doc(self) -> None:
+        self.loader.next_document()
+        self.origin_view.refresh()
+        self._update_doc_slots()
+
+    def _prev_page(self) -> None:
+        if self.active_panel == 'here':
+            self.here_view.prev_page()
+        else:
+            self.loader.prev_page()
+            self.origin_view.refresh()
+
+    def _next_page(self) -> None:
+        if self.active_panel == 'here':
+            self.here_view.next_page()
+        else:
+            self.loader.next_page()
+            self.origin_view.refresh()
+
+    def _export_pdf(self) -> None:
+        if not any(self.here_view.pages):
+            QMessageBox.information(self, 'PDF 출력', 'HERE 영역에 배치된 블록이 없습니다.')
+            return
+        path, _ = QFileDialog.getSaveFileName(self, 'PDF 저장', str(Path.home() / 'output.pdf'), 'PDF Files (*.pdf)')
+        if not path:
+            return
+        try:
+            self.pdf_exporter.export_pages(self.here_view.export_pages(), path, *self.here_view.scene_size)
+            QMessageBox.information(self, 'PDF 출력', f'저장 완료\n{path}')
+        except Exception as exc:
+            QMessageBox.critical(self, 'PDF 출력 오류', str(exc))
+
+    def _save_project(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, '작업 저장', str(Path.home() / 'capture_project.dcap'), 'Doc Capture Project (*.dcap)')
+        if not path:
+            return
+        try:
+            saved = self.project_store.save(path, self.clipboard_store, self.here_view.export_pages())
+            QMessageBox.information(self, 'SET Save', f'저장 완료\n{saved}')
+        except Exception as exc:
+            QMessageBox.critical(self, 'SET Save 오류', str(exc))
+
+    def _load_project(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, '작업 불러오기', str(Path.home()), 'Doc Capture Project (*.dcap)')
+        if not path:
+            return
+        try:
+            data = self.project_store.load(path)
+            self.clipboard_store.replace_all(data['clipboard_items'])
+            self.clipboard_view.reload_from_store()
+            self.here_view.restore_pages(data['here_pages'])
+            self._set_active_panel('clipboard' if self.clipboard_store.items else 'here')
+            self.undo_stack.clear()
+        except Exception as exc:
+            QMessageBox.critical(self, '불러오기 오류', str(exc))
+
+    def _reset_all(self) -> None:
+        reply = QMessageBox.question(self, '새로고침', '현재 작업을 초기화합니다. 계속하시겠습니까?')
+        if reply != QMessageBox.Yes:
+            return
+        self.loader = DocumentLoader()
+        self.clipboard_store = ClipboardStore()
+        self.origin_view.loader = self.loader
+        self.clipboard_view.store = self.clipboard_store
+        self.clipboard_view.reload_from_store()
+        self.origin_view.page_image = None
+        self.origin_view.update()
+        self.here_view.restore_pages([[]])
+        self.undo_stack.clear()
+        self._update_doc_slots()
