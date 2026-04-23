@@ -84,8 +84,15 @@ class DocumentLoader:
             pdf_doc = self._open_word_via_libreoffice_pdf_bridge(src)
         if pdf_doc is not None:
             return LoadedDocument(src, pdf_doc, src.suffix.lower().lstrip('.'))
-        text = ''
         if src.suffix.lower() == '.docx':
+            page_texts = self._extract_docx_page_texts(src)
+            if page_texts:
+                return LoadedDocument(
+                    src,
+                    None,
+                    src.suffix.lower().lstrip('.'),
+                    fallback_pages=self._text_blocks_to_pages(page_texts, title=src.name),
+                )
             text = self._extract_docx_text(src)
         else:
             text = self._extract_doc_text(src)
@@ -226,6 +233,10 @@ class DocumentLoader:
         return None
 
     def _extract_docx_text(self, src: Path) -> str:
+        page_texts = self._extract_docx_page_texts(src)
+        if page_texts:
+            return '\n\n'.join(page_texts)
+
         try:
             import mammoth  # type: ignore
             with open(src, 'rb') as f:
@@ -263,6 +274,100 @@ class DocumentLoader:
         except Exception:
             pass
         return ''
+
+    def _extract_docx_page_texts(self, src: Path) -> list[str]:
+        try:
+            with zipfile.ZipFile(src, 'r') as zf:
+                data = zf.read('word/document.xml')
+        except Exception:
+            return []
+        try:
+            root = ET.fromstring(data)
+        except Exception:
+            return []
+
+        ns_uri = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+        body = root.find(f'{{{ns_uri}}}body')
+        if body is None:
+            return []
+
+        pages: list[list[str]] = [[]]
+
+        def append_line(text: str) -> None:
+            cleaned = text.strip()
+            if cleaned:
+                pages[-1].append(cleaned)
+
+        def new_page() -> None:
+            if pages[-1]:
+                pages.append([])
+
+        def paragraph_to_segments(elem: ET.Element) -> list[tuple[str, str]]:
+            segments: list[tuple[str, str]] = []
+            current_parts: list[str] = []
+
+            def flush_text() -> None:
+                if current_parts:
+                    segments.append(('text', ''.join(current_parts)))
+                    current_parts.clear()
+
+            for node in elem.iter():
+                tag = node.tag.rsplit('}', 1)[-1]
+                if tag == 't' and node.text:
+                    current_parts.append(node.text)
+                elif tag == 'tab':
+                    current_parts.append('\t')
+                elif tag in {'cr'}:
+                    current_parts.append('\n')
+                elif tag == 'br':
+                    br_type = node.attrib.get(f'{{{ns_uri}}}type', '')
+                    if br_type == 'page':
+                        flush_text()
+                        segments.append(('page_break', ''))
+                    else:
+                        current_parts.append('\n')
+                elif tag == 'lastRenderedPageBreak':
+                    flush_text()
+                    segments.append(('page_break', ''))
+
+            flush_text()
+            return segments
+
+        for child in body:
+            tag = child.tag.rsplit('}', 1)[-1]
+            if tag == 'p':
+                segments = paragraph_to_segments(child)
+                if not segments:
+                    continue
+                paragraph_parts: list[str] = []
+                for kind, value in segments:
+                    if kind == 'page_break':
+                        append_line(''.join(paragraph_parts))
+                        paragraph_parts.clear()
+                        new_page()
+                    else:
+                        paragraph_parts.append(value)
+                append_line(''.join(paragraph_parts))
+            elif tag == 'tbl':
+                rows: list[str] = []
+                for tr in child.findall(f'./{{{ns_uri}}}tr'):
+                    cells: list[str] = []
+                    for tc in tr.findall(f'./{{{ns_uri}}}tc'):
+                        cell_parts: list[str] = []
+                        for p in tc.findall(f'./{{{ns_uri}}}p'):
+                            pieces = [value for kind, value in paragraph_to_segments(p) if kind == 'text' and value.strip()]
+                            if pieces:
+                                cell_parts.append(' '.join(piece.strip() for piece in pieces if piece.strip()))
+                        cell_text = ' '.join(part for part in cell_parts if part).strip()
+                        if cell_text:
+                            cells.append(cell_text)
+                    if cells:
+                        rows.append(' | '.join(cells))
+                for row in rows:
+                    append_line(row)
+
+        normalized = ['\n'.join(page).strip() for page in pages if '\n'.join(page).strip()]
+        return normalized
 
     def _extract_doc_text(self, src: Path) -> str:
         text = self._extract_doc_text_via_com(src)
@@ -529,21 +634,25 @@ class DocumentLoader:
         return '\n'.join(texts)
 
     def _text_to_pages(self, text: str, title: str = '') -> list[QImage]:
+        return self._text_blocks_to_pages([text], title=title)
+
+    def _text_blocks_to_pages(self, blocks: list[str], title: str = '') -> list[QImage]:
         page_size = (1240, 1754)
         margin = 70
         pages: list[QImage] = []
-        lines = text.splitlines() or ['']
-        batch: list[str] = []
         max_lines = 48
-        if title:
-            lines = [title, '', *lines]
-        for line in lines:
-            batch.append(line)
-            if len(batch) >= max_lines:
+        for page_index, block in enumerate(blocks):
+            lines = block.splitlines() or ['']
+            batch: list[str] = []
+            if title and page_index == 0:
+                lines = [title, '', *lines]
+            for line in lines:
+                batch.append(line)
+                if len(batch) >= max_lines:
+                    pages.append(self._render_text_page('\n'.join(batch), page_size, margin))
+                    batch = []
+            if batch:
                 pages.append(self._render_text_page('\n'.join(batch), page_size, margin))
-                batch = []
-        if batch:
-            pages.append(self._render_text_page('\n'.join(batch), page_size, margin))
         return pages or [self._render_text_page('(빈 문서)', page_size, margin)]
 
     def _render_text_page(self, text: str, page_size: tuple[int, int], margin: int) -> QImage:
