@@ -140,11 +140,22 @@ class HereView(QWidget):
             max(24.0, float(image.height()) * scale),
         )
 
+    def _default_block_position(self, target_w: float, target_h: float) -> tuple[float, float]:
+        viewport_center = QPointF(self.width() / 2.0, self.height() / 2.0)
+        scene_center = self._view_to_scene(viewport_center)
+        x = float(scene_center.x()) - target_w / 2.0
+        y = float(scene_center.y()) - target_h / 2.0
+        max_x = max(0.0, float(self.scene_size[0]) - target_w)
+        max_y = max(0.0, float(self.scene_size[1]) - target_h)
+        return (
+            min(max(0.0, x), max_x),
+            min(max(0.0, y), max_y),
+        )
+
     def _make_block(self, image: QImage, source_index: int = -1, x: float | None = None, y: float | None = None) -> dict:
         idx = sum(len(p) for p in self.pages)
-        default_x = 40 + (len(self.blocks) % 2) * 220
-        default_y = 40 + (len(self.blocks) // 2) * 180
         target_w, target_h = self._initial_block_dimensions(image)
+        default_x, default_y = self._default_block_position(target_w, target_h)
         bounds = find_content_bounds(image)
         content_left = float(bounds.left) if bounds is not None else 0.0
         content_right = float(bounds.right) if bounds is not None else max(0.0, image.width() - 1.0)
