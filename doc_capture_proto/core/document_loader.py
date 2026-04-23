@@ -85,13 +85,13 @@ class DocumentLoader:
         if pdf_doc is not None:
             return LoadedDocument(src, pdf_doc, src.suffix.lower().lstrip('.'))
         if src.suffix.lower() == '.docx':
-            page_texts = self._extract_docx_page_texts(src)
-            if page_texts:
+            page_layouts = self._extract_docx_page_layouts(src)
+            if page_layouts:
                 return LoadedDocument(
                     src,
                     None,
                     src.suffix.lower().lstrip('.'),
-                    fallback_pages=self._text_blocks_to_pages(page_texts, title=src.name),
+                    fallback_pages=self._render_docx_layout_pages(page_layouts, title=src.name),
                 )
             text = self._extract_docx_text(src)
         else:
@@ -275,7 +275,7 @@ class DocumentLoader:
             pass
         return ''
 
-    def _extract_docx_page_texts(self, src: Path) -> list[str]:
+    def _extract_docx_page_layouts(self, src: Path) -> list[list[dict]]:
         try:
             with zipfile.ZipFile(src, 'r') as zf:
                 data = zf.read('word/document.xml')
@@ -291,16 +291,34 @@ class DocumentLoader:
         if body is None:
             return []
 
-        pages: list[list[str]] = [[]]
+        pages: list[list[dict]] = [[]]
 
-        def append_line(text: str) -> None:
+        def append_paragraph(text: str, style: str = '', align: str = 'left') -> None:
             cleaned = text.strip()
             if cleaned:
-                pages[-1].append(cleaned)
+                pages[-1].append({
+                    'type': 'paragraph',
+                    'text': cleaned,
+                    'style': style,
+                    'align': align,
+                })
 
         def new_page() -> None:
             if pages[-1]:
                 pages.append([])
+
+        def paragraph_props(elem: ET.Element) -> tuple[str, str]:
+            style = ''
+            align = 'left'
+            ppr = elem.find(f'./{{{ns_uri}}}pPr')
+            if ppr is not None:
+                style_elem = ppr.find(f'./{{{ns_uri}}}pStyle')
+                if style_elem is not None:
+                    style = style_elem.attrib.get(f'{{{ns_uri}}}val', '')
+                jc_elem = ppr.find(f'./{{{ns_uri}}}jc')
+                if jc_elem is not None:
+                    align = jc_elem.attrib.get(f'{{{ns_uri}}}val', 'left')
+            return style, align
 
         def paragraph_to_segments(elem: ET.Element) -> list[tuple[str, str]]:
             segments: list[tuple[str, str]] = []
@@ -336,20 +354,22 @@ class DocumentLoader:
         for child in body:
             tag = child.tag.rsplit('}', 1)[-1]
             if tag == 'p':
+                style, align = paragraph_props(child)
                 segments = paragraph_to_segments(child)
                 if not segments:
                     continue
                 paragraph_parts: list[str] = []
                 for kind, value in segments:
                     if kind == 'page_break':
-                        append_line(''.join(paragraph_parts))
+                        append_paragraph(''.join(paragraph_parts), style=style, align=align)
                         paragraph_parts.clear()
                         new_page()
                     else:
                         paragraph_parts.append(value)
-                append_line(''.join(paragraph_parts))
+                append_paragraph(''.join(paragraph_parts), style=style, align=align)
             elif tag == 'tbl':
                 rows: list[str] = []
+                table_rows: list[list[str]] = []
                 for tr in child.findall(f'./{{{ns_uri}}}tr'):
                     cells: list[str] = []
                     for tc in tr.findall(f'./{{{ns_uri}}}tc'):
@@ -363,11 +383,33 @@ class DocumentLoader:
                             cells.append(cell_text)
                     if cells:
                         rows.append(' | '.join(cells))
-                for row in rows:
-                    append_line(row)
+                        table_rows.append(cells)
+                if table_rows:
+                    pages[-1].append({
+                        'type': 'table',
+                        'rows': table_rows,
+                    })
 
-        normalized = ['\n'.join(page).strip() for page in pages if '\n'.join(page).strip()]
+        normalized = [page for page in pages if page]
         return normalized
+
+    def _extract_docx_page_texts(self, src: Path) -> list[str]:
+        layouts = self._extract_docx_page_layouts(src)
+        page_texts: list[str] = []
+        for page in layouts:
+            lines: list[str] = []
+            for elem in page:
+                if elem.get('type') == 'paragraph':
+                    lines.append(elem.get('text', ''))
+                    lines.append('')
+                elif elem.get('type') == 'table':
+                    for row in elem.get('rows', []):
+                        lines.append(' | '.join(row))
+                    lines.append('')
+            text = '\n'.join(line for line in lines).strip()
+            if text:
+                page_texts.append(text)
+        return page_texts
 
     def _extract_doc_text(self, src: Path) -> str:
         text = self._extract_doc_text_via_com(src)
@@ -675,6 +717,96 @@ class DocumentLoader:
             int(Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap | Qt.TextExpandTabs),
             plain,
         )
+        painter.end()
+        return image
+
+    def _render_docx_layout_pages(self, layouts: list[list[dict]], title: str = '') -> list[QImage]:
+        page_size = (1240, 1754)
+        margin = 70
+        pages = [
+            self._render_docx_layout_page(layout, page_size, margin, title if index == 0 else '')
+            for index, layout in enumerate(layouts)
+        ]
+        return pages or [self._render_text_page('(빈 문서)', page_size, margin)]
+
+    def _render_docx_layout_page(self, layout: list[dict], page_size: tuple[int, int], margin: int, title: str = '') -> QImage:
+        image = QImage(page_size[0], page_size[1], QImage.Format_ARGB32)
+        image.fill(Qt.white)
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+        painter.setPen(QColor(Qt.black))
+
+        content_x = float(margin)
+        content_y = float(margin)
+        content_w = float(page_size[0] - margin * 2)
+        content_h = float(page_size[1] - margin * 2)
+
+        body_font = QFont('Malgun Gothic', 12)
+        heading_font = QFont('Malgun Gothic', 14)
+        heading_font.setBold(True)
+        title_font = QFont('Malgun Gothic', 13)
+        title_font.setBold(True)
+        table_font = QFont('Malgun Gothic', 11)
+
+        if title:
+            painter.setFont(title_font)
+            title_rect = QRectF(content_x, content_y, content_w, 28.0)
+            painter.drawText(title_rect, int(Qt.AlignLeft | Qt.AlignTop), title)
+            content_y += 40.0
+
+        for elem in layout:
+            elem_type = elem.get('type')
+            if elem_type == 'paragraph':
+                style = str(elem.get('style', '')).lower()
+                align_value = str(elem.get('align', 'left')).lower()
+                font = heading_font if 'heading' in style or 'title' in style or 'subtitle' in style else body_font
+                painter.setFont(font)
+                metrics = painter.fontMetrics()
+                flags = int(Qt.TextWordWrap | Qt.AlignTop)
+                if align_value == 'center':
+                    flags |= int(Qt.AlignHCenter)
+                elif align_value == 'right':
+                    flags |= int(Qt.AlignRight)
+                else:
+                    flags |= int(Qt.AlignLeft)
+                probe = metrics.boundingRect(
+                    QRectF(content_x, content_y, content_w, content_h).toRect(),
+                    flags,
+                    elem.get('text', ''),
+                )
+                draw_h = max(float(probe.height()), float(metrics.height()))
+                painter.drawText(QRectF(content_x, content_y, content_w, draw_h + 4.0), flags, elem.get('text', ''))
+                content_y += draw_h + (20.0 if font is heading_font else 14.0)
+            elif elem_type == 'table':
+                rows = elem.get('rows', [])
+                if not rows:
+                    continue
+                col_count = max(len(row) for row in rows)
+                if col_count <= 0:
+                    continue
+                painter.setFont(table_font)
+                metrics = painter.fontMetrics()
+                col_w = content_w / float(col_count)
+                for row in rows:
+                    cell_rects: list[QRectF] = []
+                    row_h = 0.0
+                    for col_idx in range(col_count):
+                        text = row[col_idx] if col_idx < len(row) else ''
+                        cell_rect = QRectF(content_x + col_idx * col_w, content_y, col_w, 1.0)
+                        probe = metrics.boundingRect(cell_rect.toRect().adjusted(6, 6, -6, -6), int(Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop), text)
+                        cell_h = max(float(probe.height()) + 16.0, float(metrics.height()) + 16.0)
+                        row_h = max(row_h, cell_h)
+                        cell_rects.append(cell_rect)
+                    for col_idx, cell_rect in enumerate(cell_rects):
+                        final_rect = QRectF(cell_rect.x(), content_y, col_w, row_h)
+                        painter.setPen(QColor('#808080'))
+                        painter.drawRect(final_rect)
+                        painter.setPen(QColor(Qt.black))
+                        text = row[col_idx] if col_idx < len(row) else ''
+                        painter.drawText(final_rect.adjusted(6, 6, -6, -6), int(Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop), text)
+                    content_y += row_h
+                content_y += 18.0
+
         painter.end()
         return image
 
