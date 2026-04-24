@@ -10,9 +10,6 @@ from PySide6.QtCore import QRectF
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QFileDialog, QWidget
 
-from core.hwp_reader import HwpReadError, load_hwp_document
-from core.hwp_renderer import render_hwp_document_pages
-
 
 @dataclass
 class LoadedDocument:
@@ -29,6 +26,7 @@ class DocumentLoader:
         self.page_index: int = 0
         self.last_opened_dir: str | None = None
         self._last_word_error: str = ''
+        self._last_hwp_error: str = ''
         self._progress_callback: Callable[[str], None] | None = None
         self._temp_dir = Path(tempfile.mkdtemp(prefix='doc_capture_source_'))
         try:
@@ -87,7 +85,7 @@ class DocumentLoader:
             self._notify_progress(f'Word 문서 준비 중...\n{src.name}')
             loaded = self._open_word_family(src)
         elif ext in {'.hwp', '.hwpx'}:
-            self._notify_progress(f'HWP/HWPX 내부 엔진으로 준비 중...\n{src.name}')
+            self._notify_progress(f'한컴오피스 한글 문서 준비 중...\n{src.name}')
             loaded = self._open_hwp_family(src)
         else:
             raise ValueError(f'지원하지 않는 형식입니다: {ext}')
@@ -187,16 +185,116 @@ class DocumentLoader:
             self._progress_callback(message)
 
     def _open_hwp_family(self, src: Path) -> LoadedDocument:
-        self._notify_progress(f'HWP/HWPX 구조 분석 중...\n{src.name}')
+        self._last_hwp_error = ''
+        self._notify_progress(f'한컴오피스 한글로 렌더링 중...\n{src.name}')
+        pdf_doc = self._open_hwp_via_pdf_bridge(src)
+        if pdf_doc is not None:
+            return LoadedDocument(src, pdf_doc, src.suffix.lower().lstrip('.'))
+        details = f'\n\n실패 원인: {self._last_hwp_error}' if self._last_hwp_error else ''
+        raise RuntimeError(
+            'HWP/HWPX는 한컴오피스 한글이 설치된 Windows 환경에서만 지원합니다.\n'
+            '현재는 한글 COM PDF 변환에 실패했습니다.'
+            f'{details}'
+        )
+
+    def _open_hwp_via_pdf_bridge(self, src: Path) -> fitz.Document | None:
+        resolved_src = src.expanduser().resolve()
         try:
-            model = load_hwp_document(src)
-        except HwpReadError as exc:
-            raise RuntimeError(f'HWP/HWPX 내부 로더가 문서를 읽지 못했습니다.\n\n실패 원인: {exc}') from exc
-        self._notify_progress(f'HWP/HWPX 페이지 렌더링 중...\n{src.name}')
-        pages = render_hwp_document_pages(model)
-        if not pages:
-            raise RuntimeError('HWP/HWPX 내부 렌더러가 페이지를 생성하지 못했습니다.')
-        return LoadedDocument(src, None, src.suffix.lower().lstrip('.'), fallback_pages=pages)
+            import pythoncom  # type: ignore
+            import win32com.client  # type: ignore
+        except Exception as exc:
+            self._last_hwp_error = f'pywin32 import 실패: {exc}'
+            return None
+        hwp = None
+        try:
+            pythoncom.CoInitialize()
+            self._notify_progress(f'한글 자동화 연결 중...\n{resolved_src.name}')
+            try:
+                hwp = win32com.client.Dispatch('HWPFrame.HwpObject')
+            except Exception:
+                hwp = win32com.client.DispatchEx('HWPFrame.HwpObject')
+            self._set_hwp_visibility(hwp, False)
+            self._notify_progress(f'한글에서 문서 여는 중...\n{resolved_src.name}')
+            if not self._hwp_open(hwp, resolved_src):
+                self._last_hwp_error = self._last_hwp_error or '한글이 문서를 열지 못했습니다.'
+                return None
+            out_pdf = self._temp_dir / f'{resolved_src.stem}_{len(self.loaded_documents)+1}.pdf'
+            try:
+                if out_pdf.exists():
+                    out_pdf.unlink()
+            except Exception:
+                pass
+            self._notify_progress(f'PDF로 변환 중...\n{resolved_src.name}')
+            if not self._hwp_save_pdf(hwp, out_pdf):
+                self._last_hwp_error = self._last_hwp_error or '한글이 PDF 파일을 생성하지 않았습니다.'
+                return None
+            if out_pdf.exists() and out_pdf.stat().st_size > 0:
+                return fitz.open(str(out_pdf))
+            self._last_hwp_error = '한글이 PDF 파일을 생성하지 않았습니다.'
+        except Exception as exc:
+            self._last_hwp_error = str(exc)
+            return None
+        finally:
+            try:
+                if hwp is not None:
+                    hwp.Clear(1)
+            except Exception:
+                pass
+            try:
+                if hwp is not None:
+                    hwp.Quit()
+            except Exception:
+                pass
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
+        return None
+
+    def _set_hwp_visibility(self, hwp, visible: bool) -> None:
+        try:
+            hwp.XHwpWindows.Item(0).Visible = visible
+            return
+        except Exception:
+            pass
+        try:
+            hwp.Visible = visible
+        except Exception:
+            pass
+
+    def _hwp_open(self, hwp, path: Path) -> bool:
+        open_attempts = (
+            lambda: hwp.Open(str(path), '', 'forceopen:true'),
+            lambda: hwp.Open(str(path), 'HWP', 'forceopen:true'),
+            lambda: hwp.Open(str(path)),
+        )
+        last_error = ''
+        for attempt in open_attempts:
+            try:
+                result = attempt()
+                if result is None or bool(result):
+                    return True
+            except Exception as exc:
+                last_error = str(exc)
+        self._last_hwp_error = last_error
+        return False
+
+    def _hwp_save_pdf(self, hwp, out_pdf: Path) -> bool:
+        save_attempts = (
+            lambda: hwp.SaveAs(str(out_pdf), 'PDF'),
+            lambda: hwp.SaveAs(str(out_pdf), 'PDF', ''),
+            lambda: hwp.SaveAs(str(out_pdf), 'PDF', 'export'),
+        )
+        last_error = ''
+        for attempt in save_attempts:
+            try:
+                result = attempt()
+                if (result is None or bool(result)) and out_pdf.exists() and out_pdf.stat().st_size > 0:
+                    return True
+            except Exception as exc:
+                last_error = str(exc)
+        self._last_hwp_error = last_error
+        return False
 
 
     def document_count(self) -> int:
