@@ -36,6 +36,7 @@ class PdfExporter:
                 w = block["w"] * scale
                 h = block["h"] * scale
                 c.drawImage(image_path, x, y, width=w, height=h, preserveAspectRatio=False, mask="auto")
+            self._draw_page_number(c, page_index, page_w)
             c.showPage()
         c.save()
         return str(out)
@@ -72,3 +73,8 @@ class PdfExporter:
         for line in lines:
             c.drawCentredString(x + w / 2.0, current_y, line)
             current_y -= line_height
+
+    def _draw_page_number(self, c: canvas.Canvas, page_index: int, page_w: float) -> None:
+        c.setFont('Helvetica', 8)
+        c.setFillColorRGB(0, 0, 0)
+        c.drawCentredString(page_w / 2.0, 4, f'- {page_index + 1:02d} -')

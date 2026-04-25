@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import tempfile
 from pathlib import Path
 
@@ -31,7 +32,7 @@ class HereView(QWidget):
         self.selected_drawing_index: int = -1
         self.selected_drawing_indices: set[int] = set()
         self.drawing_enabled = False
-        self.drawing_tool: str = 'hline'
+        self.drawing_tool: str = ''
         self.drawing_line_width = 0.5
         self.drawing_text_size = 14
         self.drawing_in_progress: dict | None = None
@@ -101,8 +102,9 @@ class HereView(QWidget):
 
     def add_page(self) -> None:
         self._save_current_view_state()
+        copied_drawings = copy.deepcopy(self.drawings)
         self.pages.append([])
-        self.drawing_pages.append([])
+        self.drawing_pages.append(copied_drawings)
         self.page_view_states.append({'zoom': self.default_zoom, 'pan_x': self.default_pan.x(), 'pan_y': self.default_pan.y()})
         self.current_page_index = len(self.pages) - 1
         self._clear_selection()
@@ -161,7 +163,7 @@ class HereView(QWidget):
         self.update()
 
     def set_drawing_tool(self, tool: str) -> None:
-        if tool in {'hline', 'vline', 'textbox'}:
+        if tool in {'', 'hline', 'vline', 'textbox'}:
             self.drawing_tool = tool
 
     def set_drawing_line_width(self, width: float) -> None:
@@ -478,7 +480,7 @@ class HereView(QWidget):
     def _textbox_resize_handle_rect(self, drawing: dict) -> QRectF:
         rect = self._drawing_rect_view(drawing)
         size = 8.0
-        return QRectF(rect.left() - size / 2.0, rect.bottom() - size / 2.0, size, size)
+        return QRectF(rect.right() - size / 2.0, rect.bottom() - size / 2.0, size, size)
 
     def _textbox_resize_handle_hit_rect(self, drawing: dict) -> QRectF:
         rect = self._textbox_resize_handle_rect(drawing)
@@ -493,19 +495,16 @@ class HereView(QWidget):
                 return idx
         return -1
 
-    def _resize_textbox_from_left_bottom(self, drawing: dict, delta: QPointF) -> None:
+    def _resize_textbox_from_right_bottom(self, drawing: dict, delta: QPointF) -> None:
         min_w, min_h = self._textbox_min_size(drawing)
-        old_x = float(drawing.get('x', 0.0))
         old_w = float(drawing.get('w', 1.0))
         old_h = float(drawing.get('h', 1.0))
-        requested_w = old_w - delta.x() / self.zoom
+        requested_w = old_w + delta.x() / self.zoom
         requested_h = old_h + delta.y() / self.zoom
-        new_w = max(min_w, requested_w)
-        new_h = max(min_h, requested_h)
-        right = old_x + old_w
-        drawing['x'] = right - new_w
-        drawing['w'] = new_w
-        drawing['h'] = new_h
+        drawing['w'] = max(min_w, requested_w)
+        drawing['h'] = max(min_h, requested_h)
+        drawing['base_w'] = float(drawing['w'])
+        drawing['base_h'] = float(drawing['h'])
         drawing['auto_sized'] = False
 
     def _reindex_selection_after_delete(self, deleted_index: int) -> None:
@@ -916,7 +915,8 @@ class HereView(QWidget):
             self.selected_drawing_index = -1
             self.selected_drawing_indices.clear()
             self._clear_selection()
-            self._begin_drawing(self._view_to_scene(pos))
+            if self.drawing_tool:
+                self._begin_drawing(self._view_to_scene(pos))
             self.update()
             return
         for i in reversed(range(len(self.blocks))):
@@ -971,7 +971,7 @@ class HereView(QWidget):
             return
         if self.drawing_enabled and self.resizing_drawing and (event.buttons() & Qt.LeftButton):
             if 0 <= self.resizing_drawing_index < len(self.drawings):
-                self._resize_textbox_from_left_bottom(self.drawings[self.resizing_drawing_index], delta)
+                self._resize_textbox_from_right_bottom(self.drawings[self.resizing_drawing_index], delta)
                 self.drag_last = pos
                 self._sync_text_editor_geometry()
                 self.update()
@@ -1280,6 +1280,7 @@ class HereView(QWidget):
                     painter.setBrush(QColor('#d12c2c'))
                     for handle in ('corner', 'right', 'bottom'):
                         painter.drawEllipse(self._resize_handle_visual_rect(block, handle))
+        self._paint_page_number(painter, page_rect)
 
     def _paint_drawings(self, painter: QPainter) -> None:
         for i, drawing in enumerate(self.drawings):
@@ -1317,3 +1318,14 @@ class HereView(QWidget):
             painter.drawRect(rect.adjusted(-3, -3, 3, 3))
             painter.setBrush(QColor('#d12c2c'))
             painter.drawRect(self._textbox_resize_handle_rect(drawing))
+
+    def _paint_page_number(self, painter: QPainter, page_rect: QRectF) -> None:
+        painter.save()
+        font = QFont()
+        font.setPointSize(8)
+        painter.setFont(font)
+        painter.setPen(QPen(QColor('#111111'), 1))
+        text = f'- {self.current_page_index + 1:02d} -'
+        footer = QRectF(page_rect.left(), page_rect.bottom() - 18, page_rect.width(), 16)
+        painter.drawText(footer, int(Qt.AlignHCenter | Qt.AlignBottom), text)
+        painter.restore()

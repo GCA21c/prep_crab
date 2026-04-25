@@ -295,14 +295,13 @@ class MainWindow(QMainWindow):
 
         self.btn_draw_toggle = QPushButton('DRAW')
         self.btn_draw_toggle.setCheckable(True)
-        self.btn_draw_toggle.setFixedWidth(48)
+        self.btn_draw_toggle.setFixedWidth(64)
         self.btn_draw_hline = QPushButton('─')
         self.btn_draw_vline = QPushButton('│')
         self.btn_draw_box = QPushButton('BOX')
         for button in (self.btn_draw_hline, self.btn_draw_vline, self.btn_draw_box):
             button.setCheckable(True)
             button.setFixedWidth(38)
-        self.btn_draw_hline.setChecked(True)
         self.draw_line_width = QDoubleSpinBox()
         self.draw_line_width.setRange(0.1, 3.0)
         self.draw_line_width.setSingleStep(0.1)
@@ -315,9 +314,9 @@ class MainWindow(QMainWindow):
         self.draw_text_size.setSuffix('pt')
         self.draw_text_size.setFixedWidth(82)
         self.btn_draw_toggle.toggled.connect(self.here_view.set_drawing_enabled)
-        self.btn_draw_hline.clicked.connect(lambda: self._set_here_drawing_tool('hline'))
-        self.btn_draw_vline.clicked.connect(lambda: self._set_here_drawing_tool('vline'))
-        self.btn_draw_box.clicked.connect(lambda: self._set_here_drawing_tool('textbox'))
+        self.btn_draw_hline.clicked.connect(lambda checked: self._set_here_drawing_tool('hline' if checked else ''))
+        self.btn_draw_vline.clicked.connect(lambda checked: self._set_here_drawing_tool('vline' if checked else ''))
+        self.btn_draw_box.clicked.connect(lambda checked: self._set_here_drawing_tool('textbox' if checked else ''))
         self.draw_line_width.valueChanged.connect(self.here_view.set_drawing_line_width)
         self.draw_text_size.valueChanged.connect(self.here_view.set_drawing_text_size)
 
