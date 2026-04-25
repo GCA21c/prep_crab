@@ -207,6 +207,7 @@ class MainWindow(QMainWindow):
         self.here_view.history_checkpoint_requested.connect(self._push_undo_state)
         self.here_view.duplicate_to_clipboard_requested.connect(self._duplicate_here_selection)
         self.here_view.undo_requested.connect(self._undo)
+        self.here_view.drawing_properties_selected.connect(self._sync_here_drawing_controls)
 
         self.origin_view.interaction_started.connect(self._set_active_panel)
         self.clipboard_view.interaction_started.connect(self._set_active_panel)
@@ -413,6 +414,7 @@ class MainWindow(QMainWindow):
             'here_selected_index': self.here_view.selected_index,
             'here_selected_indices': sorted(self.here_view.selected_indices),
             'here_selected_drawing_index': self.here_view.selected_drawing_index,
+            'here_selected_drawing_indices': sorted(self.here_view.selected_drawing_indices),
         }
 
     def _restore_snapshot(self, snap: dict) -> None:
@@ -433,6 +435,14 @@ class MainWindow(QMainWindow):
         if self.here_view.selected_index < 0 and self.here_view.selected_indices:
             self.here_view.selected_index = max(self.here_view.selected_indices)
         self.here_view.selected_drawing_index = snap.get('here_selected_drawing_index', -1)
+        self.here_view.selected_drawing_indices = {
+            idx for idx in snap.get('here_selected_drawing_indices', [])
+            if 0 <= idx < len(self.here_view.drawings)
+        }
+        if self.here_view.selected_drawing_index not in self.here_view.selected_drawing_indices and self.here_view.selected_drawing_index >= 0:
+            self.here_view.selected_drawing_indices.add(self.here_view.selected_drawing_index)
+        if self.here_view.selected_drawing_index < 0 and self.here_view.selected_drawing_indices:
+            self.here_view.selected_drawing_index = max(self.here_view.selected_drawing_indices)
         self.here_view._emit_selected_clipboard_index()
         self.here_view.update()
         self._update_here_slots()
@@ -515,6 +525,16 @@ class MainWindow(QMainWindow):
         self.here_view.set_drawing_tool(tool)
         self.here_view.setFocus()
         self._set_active_panel('here')
+
+    def _sync_here_drawing_controls(self, line_width, text_size) -> None:
+        if line_width is not None:
+            old = self.draw_line_width.blockSignals(True)
+            self.draw_line_width.setValue(float(line_width))
+            self.draw_line_width.blockSignals(old)
+        if text_size is not None:
+            old = self.draw_text_size.blockSignals(True)
+            self.draw_text_size.setValue(int(text_size))
+            self.draw_text_size.blockSignals(old)
 
     def _send_clipboard_to_here(self, image, row: int) -> None:
         self._push_undo_state()

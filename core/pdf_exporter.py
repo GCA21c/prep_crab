@@ -65,7 +65,10 @@ class PdfExporter:
         font_size = max(6.0, float(drawing.get('font_size', 14)))
         c.setFont('Helvetica', font_size)
         text = str(drawing.get('text', ''))
-        text_obj = c.beginText(x + 4 * scale, y + h - font_size - 4 * scale)
-        for line in text.splitlines() or ['']:
-            text_obj.textLine(line)
-        c.drawText(text_obj)
+        lines = text.splitlines() or ['']
+        line_height = font_size * 1.2
+        total_height = line_height * len(lines)
+        current_y = y + (h + total_height) / 2.0 - font_size
+        for line in lines:
+            c.drawCentredString(x + w / 2.0, current_y, line)
+            current_y -= line_height
