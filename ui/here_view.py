@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont, QImage, QKeySequence, QPainter, QPen
+from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont, QFontMetricsF, QImage, QKeySequence, QPainter, QPen
 from PySide6.QtWidgets import QSizePolicy, QTextEdit, QWidget
 
 from core.capture_utils import find_content_bounds
@@ -37,6 +37,8 @@ class HereView(QWidget):
         self.drawing_in_progress: dict | None = None
         self.drawing_start_scene = QPointF()
         self.dragging_drawing = False
+        self.resizing_drawing = False
+        self.resizing_drawing_index: int = -1
         self.text_editor: QTextEdit | None = None
         self.text_editor_index: int = -1
         self.drag_last = QPointF()
@@ -184,11 +186,13 @@ class HereView(QWidget):
                 if not changed:
                     self.history_checkpoint_requested.emit()
                 drawing['font_size'] = self.drawing_text_size
+                self._autosize_textbox_for_font(drawing)
                 changed = True
         if self.text_editor is not None:
             font = self.text_editor.font()
             font.setPointSize(self.drawing_text_size)
             self.text_editor.setFont(font)
+            self._sync_text_editor_geometry()
         if changed:
             self.update()
 
@@ -302,6 +306,12 @@ class HereView(QWidget):
             self.drawing_pages.append([])
         if len(self.drawing_pages) > len(self.pages):
             self.drawing_pages = self.drawing_pages[:len(self.pages)]
+        for page in self.drawing_pages:
+            for drawing in page:
+                if drawing.get('type') == 'textbox':
+                    drawing.setdefault('base_w', float(drawing.get('w', 1.0)))
+                    drawing.setdefault('base_h', float(drawing.get('h', 1.0)))
+                    drawing.setdefault('auto_sized', False)
         self.selected_drawing_index = -1
         self.selected_drawing_indices.clear()
         self.update()
@@ -439,6 +449,65 @@ class HereView(QWidget):
         rect = self._drawing_rect_view(self.drawings[self.text_editor_index]).adjusted(2, 2, -2, -2)
         self.text_editor.setGeometry(int(rect.x()), int(rect.y()), max(24, int(rect.width())), max(20, int(rect.height())))
 
+    def _textbox_min_size(self, drawing: dict) -> tuple[float, float]:
+        font = QFont()
+        font.setPointSize(max(6, int(drawing.get('font_size', self.drawing_text_size))))
+        metrics = QFontMetricsF(font)
+        lines = str(drawing.get('text', '')).splitlines() or ['']
+        padding_x = 18.0
+        padding_y = 14.0
+        min_w = max(24.0, max(metrics.horizontalAdvance(line) for line in lines) + padding_x)
+        min_h = max(20.0, metrics.lineSpacing() * len(lines) + padding_y)
+        return min_w, min_h
+
+    def _autosize_textbox_for_font(self, drawing: dict) -> None:
+        if drawing.get('type') != 'textbox':
+            return
+        base_w = float(drawing.setdefault('base_w', drawing.get('w', 1.0)))
+        base_h = float(drawing.setdefault('base_h', drawing.get('h', 1.0)))
+        min_w, min_h = self._textbox_min_size(drawing)
+        target_w = max(base_w, min_w)
+        target_h = max(base_h, min_h)
+        grew = target_w > base_w or target_h > base_h
+        if grew or drawing.get('auto_sized'):
+            drawing['w'] = target_w
+            drawing['h'] = target_h
+            drawing['auto_sized'] = grew
+            self._sync_text_editor_geometry()
+
+    def _textbox_resize_handle_rect(self, drawing: dict) -> QRectF:
+        rect = self._drawing_rect_view(drawing)
+        size = 8.0
+        return QRectF(rect.left() - size / 2.0, rect.bottom() - size / 2.0, size, size)
+
+    def _textbox_resize_handle_hit_rect(self, drawing: dict) -> QRectF:
+        rect = self._textbox_resize_handle_rect(drawing)
+        return rect.adjusted(-4, -4, 4, 4)
+
+    def _textbox_resize_handle_at(self, pos: QPointF) -> int:
+        for idx in reversed(self._selected_drawing_indices_sorted()):
+            if not (0 <= idx < len(self.drawings)):
+                continue
+            drawing = self.drawings[idx]
+            if drawing.get('type') == 'textbox' and self._textbox_resize_handle_hit_rect(drawing).contains(pos):
+                return idx
+        return -1
+
+    def _resize_textbox_from_left_bottom(self, drawing: dict, delta: QPointF) -> None:
+        min_w, min_h = self._textbox_min_size(drawing)
+        old_x = float(drawing.get('x', 0.0))
+        old_w = float(drawing.get('w', 1.0))
+        old_h = float(drawing.get('h', 1.0))
+        requested_w = old_w - delta.x() / self.zoom
+        requested_h = old_h + delta.y() / self.zoom
+        new_w = max(min_w, requested_w)
+        new_h = max(min_h, requested_h)
+        right = old_x + old_w
+        drawing['x'] = right - new_w
+        drawing['w'] = new_w
+        drawing['h'] = new_h
+        drawing['auto_sized'] = False
+
     def _reindex_selection_after_delete(self, deleted_index: int) -> None:
         new_selection: set[int] = set()
         for idx in self.selected_indices:
@@ -524,6 +593,9 @@ class HereView(QWidget):
                 'h': 1.0,
                 'text': '',
                 'font_size': int(self.drawing_text_size),
+                'base_w': 1.0,
+                'base_h': 1.0,
+                'auto_sized': False,
             }
         else:
             self.drawing_in_progress = {
@@ -571,6 +643,9 @@ class HereView(QWidget):
                 self.selected_drawing_index = -1
                 self.selected_drawing_indices.clear()
                 return
+            drawing['base_w'] = float(drawing.get('w', 1.0))
+            drawing['base_h'] = float(drawing.get('h', 1.0))
+            drawing['auto_sized'] = False
             index = self.drawings.index(drawing) if drawing in self.drawings else -1
             if index >= 0:
                 self._start_text_editor(index)
@@ -645,6 +720,7 @@ class HereView(QWidget):
             if drawing.get('type') == 'textbox' and str(drawing.get('text', '')) != text:
                 self.history_checkpoint_requested.emit()
                 drawing['text'] = text
+                self._autosize_textbox_for_font(drawing)
         self.update()
 
     def eventFilter(self, watched, event) -> bool:
@@ -812,6 +888,16 @@ class HereView(QWidget):
             self.setCursor(Qt.ClosedHandCursor)
             return
         if self.drawing_enabled and self._page_rect_view().contains(pos):
+            resize_drawing_index = self._textbox_resize_handle_at(pos)
+            if resize_drawing_index >= 0:
+                self._commit_text_editor()
+                self._set_single_drawing_selection(resize_drawing_index)
+                self.resizing_drawing = True
+                self.resizing_drawing_index = resize_drawing_index
+                self.history_checkpoint_requested.emit()
+                self.setCursor(Qt.SizeFDiagCursor)
+                self.update()
+                return
             drawing_index = self._drawing_at(pos)
             if drawing_index >= 0:
                 self._commit_text_editor()
@@ -882,6 +968,13 @@ class HereView(QWidget):
         if self.drawing_enabled and self.drawing_in_progress is not None and (event.buttons() & Qt.LeftButton):
             self._update_drawing(self._view_to_scene(pos))
             self.update()
+            return
+        if self.drawing_enabled and self.resizing_drawing and (event.buttons() & Qt.LeftButton):
+            if 0 <= self.resizing_drawing_index < len(self.drawings):
+                self._resize_textbox_from_left_bottom(self.drawings[self.resizing_drawing_index], delta)
+                self.drag_last = pos
+                self._sync_text_editor_geometry()
+                self.update()
             return
         if self.drawing_enabled and self.dragging_drawing and (event.buttons() & Qt.LeftButton):
             move_x = delta.x() / self.zoom
@@ -982,6 +1075,8 @@ class HereView(QWidget):
         self.middle_panning = False
         self.dragging_block = False
         self.dragging_drawing = False
+        self.resizing_drawing = False
+        self.resizing_drawing_index = -1
         self.resizing_block = False
         self.resize_mode = None
         if self.drawing_in_progress is not None:
@@ -1188,11 +1283,9 @@ class HereView(QWidget):
 
     def _paint_drawings(self, painter: QPainter) -> None:
         for i, drawing in enumerate(self.drawings):
-            if self.text_editor is not None and i == self.text_editor_index:
-                continue
             selected = self.drawing_enabled and i in self._selected_drawing_indices_sorted()
             if drawing.get('type') == 'textbox':
-                self._paint_textbox(painter, drawing, selected=selected)
+                self._paint_textbox(painter, drawing, selected=selected, hide_text=self.text_editor is not None and i == self.text_editor_index)
             else:
                 self._paint_line(painter, drawing, selected=selected)
 
@@ -1209,15 +1302,18 @@ class HereView(QWidget):
             painter.setPen(QPen(QColor('#d12c2c'), 1, Qt.DashLine))
             painter.drawRect(self._drawing_rect_view(drawing))
 
-    def _paint_textbox(self, painter: QPainter, drawing: dict, *, selected: bool) -> None:
+    def _paint_textbox(self, painter: QPainter, drawing: dict, *, selected: bool, hide_text: bool = False) -> None:
         rect = self._drawing_rect_view(drawing)
         painter.setPen(QPen(QColor('#111111'), 1))
         painter.setBrush(Qt.NoBrush)
         painter.drawRect(rect)
-        font = QFont()
-        font.setPointSize(max(6, int(drawing.get('font_size', 14))))
-        painter.setFont(font)
-        painter.drawText(rect.adjusted(6, 4, -6, -4), int(Qt.AlignCenter | Qt.TextWordWrap), str(drawing.get('text', '')))
+        if not hide_text:
+            font = QFont()
+            font.setPointSize(max(6, int(drawing.get('font_size', 14))))
+            painter.setFont(font)
+            painter.drawText(rect.adjusted(6, 4, -6, -4), int(Qt.AlignCenter | Qt.TextWordWrap), str(drawing.get('text', '')))
         if selected:
             painter.setPen(QPen(QColor('#d12c2c'), 1, Qt.DashLine))
             painter.drawRect(rect.adjusted(-3, -3, 3, 3))
+            painter.setBrush(QColor('#d12c2c'))
+            painter.drawRect(self._textbox_resize_handle_rect(drawing))
