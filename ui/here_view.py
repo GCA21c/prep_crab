@@ -233,9 +233,6 @@ class HereView(QWidget):
                 self._autosize_textbox_for_font(drawing)
                 changed = True
         if self.text_editor is not None:
-            font = self.text_editor.font()
-            font.setPointSize(self.drawing_text_size)
-            self.text_editor.setFont(font)
             self._sync_text_editor_geometry()
         if changed:
             self.update()
@@ -490,8 +487,15 @@ class HereView(QWidget):
     def _sync_text_editor_geometry(self) -> None:
         if self.text_editor is None or not (0 <= self.text_editor_index < len(self.drawings)):
             return
-        rect = self._drawing_rect_view(self.drawings[self.text_editor_index]).adjusted(2, 2, -2, -2)
+        drawing = self.drawings[self.text_editor_index]
+        rect = self._drawing_rect_view(drawing).adjusted(2, 2, -2, -2)
+        self.text_editor.setFont(self._scaled_text_font(drawing))
         self.text_editor.setGeometry(int(rect.x()), int(rect.y()), max(24, int(rect.width())), max(20, int(rect.height())))
+
+    def _scaled_text_font(self, drawing: dict) -> QFont:
+        font = QFont()
+        font.setPointSizeF(max(1.0, float(drawing.get('font_size', 14)) * self.zoom))
+        return font
 
     def _textbox_min_size(self, drawing: dict) -> tuple[float, float]:
         font = QFont()
@@ -560,6 +564,45 @@ class HereView(QWidget):
                 if rect.adjusted(-4, -4, 4, 4).contains(pos):
                     return idx, endpoint
         return -1, ''
+
+    def _drawing_scene_bounds(self, indices: list[int]) -> QRectF | None:
+        bounds: QRectF | None = None
+        for idx in indices:
+            if not (0 <= idx < len(self.drawings)):
+                continue
+            drawing = self.drawings[idx]
+            if drawing.get('type') == 'textbox':
+                rect = QRectF(
+                    float(drawing.get('x', 0.0)),
+                    float(drawing.get('y', 0.0)),
+                    float(drawing.get('w', 0.0)),
+                    float(drawing.get('h', 0.0)),
+                )
+            else:
+                x1 = float(drawing.get('x1', 0.0))
+                y1 = float(drawing.get('y1', 0.0))
+                x2 = float(drawing.get('x2', 0.0))
+                y2 = float(drawing.get('y2', 0.0))
+                rect = QRectF(min(x1, x2), min(y1, y2), abs(x2 - x1), abs(y2 - y1))
+            bounds = rect if bounds is None else bounds.united(rect)
+        return bounds
+
+    def _apply_drawing_center_magnet(self, indices: list[int], threshold_px: float = 8.0) -> None:
+        bounds = self._drawing_scene_bounds(indices)
+        if bounds is None:
+            self._clear_guides()
+            return
+        threshold = threshold_px / max(self.zoom, 0.01)
+        target_x = float(self.scene_size[0]) / 2.0
+        target_y = float(self.scene_size[1]) / 2.0
+        snap_x = abs(bounds.center().x() - target_x) <= threshold
+        snap_y = abs(bounds.center().y() - target_y) <= threshold
+        dx = target_x - bounds.center().x() if snap_x else 0.0
+        dy = target_y - bounds.center().y() if snap_y else 0.0
+        for idx in indices:
+            self._move_drawing(self.drawings[idx], dx, dy)
+        self.guide_lines_x = [target_x] if snap_x else []
+        self.guide_lines_y = [target_y] if snap_y else []
 
     def _resize_textbox_from_right_bottom(self, drawing: dict, delta: QPointF) -> None:
         min_w, min_h = self._textbox_min_size(drawing)
@@ -773,9 +816,7 @@ class HereView(QWidget):
         editor.setAlignment(Qt.AlignCenter)
         editor.setFrameShape(QTextEdit.NoFrame)
         editor.setStyleSheet('QTextEdit { background: transparent; color: #111111; }')
-        font = editor.font()
-        font.setPointSize(max(6, int(drawing.get('font_size', self.drawing_text_size))))
-        editor.setFont(font)
+        editor.setFont(self._scaled_text_font(drawing))
         editor.setGeometry(int(rect.x()), int(rect.y()), max(24, int(rect.width())), max(20, int(rect.height())))
         editor.installEventFilter(self)
         editor.show()
@@ -1074,8 +1115,10 @@ class HereView(QWidget):
         if self.drawing_enabled and self.dragging_drawing and (event.buttons() & Qt.LeftButton):
             move_x = delta.x() / self.zoom
             move_y = delta.y() / self.zoom
-            for idx in self._selected_drawing_indices_sorted():
+            selected_drawing_indices = self._selected_drawing_indices_sorted()
+            for idx in selected_drawing_indices:
                 self._move_drawing(self.drawings[idx], move_x, move_y)
+            self._apply_drawing_center_magnet(selected_drawing_indices)
             self.drag_last = pos
             self._sync_text_editor_geometry()
             self.update()
@@ -1227,6 +1270,7 @@ class HereView(QWidget):
                 dy = step
             for idx in self._selected_drawing_indices_sorted():
                 self._move_drawing(self.drawings[idx], dx, dy)
+            self._apply_drawing_center_magnet(self._selected_drawing_indices_sorted())
             self._sync_text_editor_geometry()
             event.accept()
             self.update()
@@ -1410,15 +1454,27 @@ class HereView(QWidget):
         painter.setBrush(Qt.NoBrush)
         painter.drawRect(rect)
         if not hide_text:
-            font = QFont()
-            font.setPointSize(max(6, int(drawing.get('font_size', 14))))
-            painter.setFont(font)
-            painter.drawText(rect.adjusted(6, 4, -6, -4), int(Qt.AlignCenter | Qt.TextWordWrap), str(drawing.get('text', '')))
+            self._paint_centered_text(painter, rect.adjusted(6 * self.zoom, 4 * self.zoom, -6 * self.zoom, -4 * self.zoom), drawing)
         if selected:
             painter.setPen(QPen(QColor('#d12c2c'), 1, Qt.DashLine))
             painter.drawRect(rect.adjusted(-3, -3, 3, 3))
             painter.setBrush(QColor('#d12c2c'))
             painter.drawRect(self._textbox_resize_handle_rect(drawing))
+
+    def _paint_centered_text(self, painter: QPainter, rect: QRectF, drawing: dict) -> None:
+        painter.save()
+        font = self._scaled_text_font(drawing)
+        painter.setFont(font)
+        painter.setPen(QPen(QColor('#111111'), 1))
+        metrics = QFontMetricsF(font)
+        lines = str(drawing.get('text', '')).splitlines() or ['']
+        line_height = metrics.lineSpacing()
+        total_height = line_height * len(lines)
+        baseline_y = rect.center().y() - total_height / 2.0 + metrics.ascent()
+        for line in lines:
+            painter.drawText(QPointF(rect.center().x() - metrics.horizontalAdvance(line) / 2.0, baseline_y), line)
+            baseline_y += line_height
+        painter.restore()
 
     def _paint_page_number(self, painter: QPainter, page_rect: QRectF) -> None:
         painter.save()
