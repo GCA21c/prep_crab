@@ -363,9 +363,9 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(9)
-        layout.addWidget(self.origin_panel, 4)
-        layout.addWidget(self.clipboard_panel, 3)
-        layout.addWidget(self.here_panel, 4)
+        layout.addWidget(self.origin_panel, 3)
+        layout.addWidget(self.clipboard_panel, 2)
+        layout.addWidget(self.here_panel, 5)
         return layout
 
     def _snapshot_state(self) -> dict:

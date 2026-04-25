@@ -40,6 +40,9 @@ class HereView(QWidget):
         self.dragging_drawing = False
         self.resizing_drawing = False
         self.resizing_drawing_index: int = -1
+        self.resizing_line = False
+        self.resizing_line_index: int = -1
+        self.resizing_line_endpoint: str = ''
         self.text_editor: QTextEdit | None = None
         self.text_editor_index: int = -1
         self.drag_last = QPointF()
@@ -69,6 +72,45 @@ class HereView(QWidget):
         self.setFocusPolicy(Qt.StrongFocus)
         self.setAcceptDrops(True)
         self.temp_dir = Path(tempfile.mkdtemp(prefix='doc_capture_here_'))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_fit_default_view()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._apply_fit_default_view()
+
+    def _fit_view_state(self) -> tuple[float, QPointF]:
+        margin = 12.0
+        zoom_x = max(0.05, (self.width() - margin * 2.0) / float(self.scene_size[0]))
+        zoom_y = max(0.05, (self.height() - margin * 2.0) / float(self.scene_size[1]))
+        zoom = min(zoom_x, zoom_y)
+        page_w = self.scene_size[0] * zoom
+        page_h = self.scene_size[1] * zoom
+        pan = QPointF(-(self.width() - page_w) / 2.0, -(self.height() - page_h) / 2.0)
+        return zoom, pan
+
+    def _is_default_view(self) -> bool:
+        return abs(float(self.zoom) - float(self.default_zoom)) < 1e-6 and abs(float(self.pan.x()) - float(self.default_pan.x())) < 1e-6 and abs(float(self.pan.y()) - float(self.default_pan.y())) < 1e-6
+
+    def _apply_fit_default_view(self) -> None:
+        if self.width() <= 0 or self.height() <= 0:
+            return
+        was_default = self._is_default_view()
+        old_zoom = self.default_zoom
+        old_pan = QPointF(self.default_pan)
+        self.default_zoom, self.default_pan = self._fit_view_state()
+        for state in self.page_view_states:
+            if abs(float(state.get('zoom', old_zoom)) - old_zoom) < 1e-6 and abs(float(state.get('pan_x', old_pan.x())) - old_pan.x()) < 1e-6 and abs(float(state.get('pan_y', old_pan.y())) - old_pan.y()) < 1e-6:
+                state['zoom'] = self.default_zoom
+                state['pan_x'] = self.default_pan.x()
+                state['pan_y'] = self.default_pan.y()
+        if was_default:
+            self.zoom = self.default_zoom
+            self.pan = QPointF(self.default_pan)
+            self._save_current_view_state()
+            self.update()
 
     @property
     def blocks(self) -> list[dict]:
@@ -495,6 +537,30 @@ class HereView(QWidget):
                 return idx
         return -1
 
+    def _line_resize_handle_rects(self, drawing: dict) -> dict[str, QRectF]:
+        page_rect = self._page_rect_view()
+        size = 8.0
+        x1 = page_rect.x() + float(drawing.get('x1', 0.0)) * self.zoom
+        y1 = page_rect.y() + float(drawing.get('y1', 0.0)) * self.zoom
+        x2 = page_rect.x() + float(drawing.get('x2', 0.0)) * self.zoom
+        y2 = page_rect.y() + float(drawing.get('y2', 0.0)) * self.zoom
+        return {
+            'start': QRectF(x1 - size / 2.0, y1 - size / 2.0, size, size),
+            'end': QRectF(x2 - size / 2.0, y2 - size / 2.0, size, size),
+        }
+
+    def _line_resize_handle_at(self, pos: QPointF) -> tuple[int, str]:
+        for idx in reversed(self._selected_drawing_indices_sorted()):
+            if not (0 <= idx < len(self.drawings)):
+                continue
+            drawing = self.drawings[idx]
+            if drawing.get('type') == 'textbox':
+                continue
+            for endpoint, rect in self._line_resize_handle_rects(drawing).items():
+                if rect.adjusted(-4, -4, 4, 4).contains(pos):
+                    return idx, endpoint
+        return -1, ''
+
     def _resize_textbox_from_right_bottom(self, drawing: dict, delta: QPointF) -> None:
         min_w, min_h = self._textbox_min_size(drawing)
         old_w = float(drawing.get('w', 1.0))
@@ -506,6 +572,19 @@ class HereView(QWidget):
         drawing['base_w'] = float(drawing['w'])
         drawing['base_h'] = float(drawing['h'])
         drawing['auto_sized'] = False
+
+    def _resize_line_endpoint(self, drawing: dict, endpoint: str, scene_pos: QPointF) -> None:
+        point = self._clamp_scene_point(scene_pos)
+        if drawing.get('orientation') == 'vline':
+            if endpoint == 'start':
+                drawing['y1'] = point.y()
+            else:
+                drawing['y2'] = point.y()
+            return
+        if endpoint == 'start':
+            drawing['x1'] = point.x()
+        else:
+            drawing['x2'] = point.x()
 
     def _reindex_selection_after_delete(self, deleted_index: int) -> None:
         new_selection: set[int] = set()
@@ -887,6 +966,17 @@ class HereView(QWidget):
             self.setCursor(Qt.ClosedHandCursor)
             return
         if self.drawing_enabled and self._page_rect_view().contains(pos):
+            resize_line_index, resize_line_endpoint = self._line_resize_handle_at(pos)
+            if resize_line_index >= 0:
+                self._commit_text_editor()
+                self._set_single_drawing_selection(resize_line_index)
+                self.resizing_line = True
+                self.resizing_line_index = resize_line_index
+                self.resizing_line_endpoint = resize_line_endpoint
+                self.history_checkpoint_requested.emit()
+                self.setCursor(Qt.SizeHorCursor if self.drawings[resize_line_index].get('orientation') != 'vline' else Qt.SizeVerCursor)
+                self.update()
+                return
             resize_drawing_index = self._textbox_resize_handle_at(pos)
             if resize_drawing_index >= 0:
                 self._commit_text_editor()
@@ -968,6 +1058,11 @@ class HereView(QWidget):
         if self.drawing_enabled and self.drawing_in_progress is not None and (event.buttons() & Qt.LeftButton):
             self._update_drawing(self._view_to_scene(pos))
             self.update()
+            return
+        if self.drawing_enabled and self.resizing_line and (event.buttons() & Qt.LeftButton):
+            if 0 <= self.resizing_line_index < len(self.drawings):
+                self._resize_line_endpoint(self.drawings[self.resizing_line_index], self.resizing_line_endpoint, self._view_to_scene(pos))
+                self.update()
             return
         if self.drawing_enabled and self.resizing_drawing and (event.buttons() & Qt.LeftButton):
             if 0 <= self.resizing_drawing_index < len(self.drawings):
@@ -1075,6 +1170,9 @@ class HereView(QWidget):
         self.middle_panning = False
         self.dragging_block = False
         self.dragging_drawing = False
+        self.resizing_line = False
+        self.resizing_line_index = -1
+        self.resizing_line_endpoint = ''
         self.resizing_drawing = False
         self.resizing_drawing_index = -1
         self.resizing_block = False
@@ -1302,6 +1400,9 @@ class HereView(QWidget):
         if selected:
             painter.setPen(QPen(QColor('#d12c2c'), 1, Qt.DashLine))
             painter.drawRect(self._drawing_rect_view(drawing))
+            painter.setBrush(QColor('#d12c2c'))
+            for rect in self._line_resize_handle_rects(drawing).values():
+                painter.drawRect(rect)
 
     def _paint_textbox(self, painter: QPainter, drawing: dict, *, selected: bool, hide_text: bool = False) -> None:
         rect = self._drawing_rect_view(drawing)
