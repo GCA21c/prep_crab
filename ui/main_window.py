@@ -136,10 +136,14 @@ class BusyOverlay(QWidget):
         self.detail_label.setStyleSheet('color:#d4dbe3; background:transparent; font-size:13px;')
         self.detail_label.setWordWrap(True)
         self.detail_label.setAlignment(Qt.AlignCenter)
+        self.detail_label.setMinimumWidth(420)
+        self.detail_label.setMinimumHeight(88)
+        self.detail_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
 
         card_layout.addWidget(self.title_label, 0, Qt.AlignCenter)
-        card_layout.addWidget(self.detail_label, 0, Qt.AlignCenter)
-        self.card.setFixedWidth(360)
+        card_layout.addWidget(self.detail_label, 1)
+        self.card.setMinimumWidth(500)
+        self.card.setMaximumWidth(620)
 
         row.addWidget(self.card, 0)
         row.addStretch(1)
