@@ -72,15 +72,16 @@ class PanelHeader(QWidget):
 
 
 class PanelControls(QWidget):
-    def __init__(self, buttons: list[QPushButton]) -> None:
+    def __init__(self, buttons: list[QWidget]) -> None:
         super().__init__()
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
-        trailing_buttons: list[QPushButton] = []
+        trailing_buttons: list[QWidget] = []
         for button in buttons:
-            button.setMinimumHeight(28)
-            if button.text().lower() == 'x':
+            if isinstance(button, QPushButton):
+                button.setMinimumHeight(28)
+            if isinstance(button, QPushButton) and button.text().lower() == 'x':
                 trailing_buttons.append(button)
             else:
                 layout.addWidget(button, 0)
@@ -212,6 +213,8 @@ class MainWindow(QMainWindow):
         self.here_view.duplicate_to_clipboard_requested.connect(self._duplicate_here_selection)
         self.here_view.undo_requested.connect(self._undo)
         self.here_view.drawing_properties_selected.connect(self._sync_here_drawing_controls)
+        self.origin_view.zoom_changed.connect(lambda ratio: self._update_zoom_label(self.origin_zoom_label, ratio))
+        self.here_view.zoom_changed.connect(lambda ratio: self._update_zoom_label(self.here_zoom_label, ratio))
 
         self.origin_view.interaction_started.connect(self._set_active_panel)
         self.clipboard_view.interaction_started.connect(self._set_active_panel)
@@ -232,6 +235,8 @@ class MainWindow(QMainWindow):
         self._update_doc_slots()
         self._update_clipboard_count()
         self._update_here_slots()
+        self._update_zoom_label(self.origin_zoom_label, 1.0)
+        self._update_zoom_label(self.here_zoom_label, 1.0)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -277,6 +282,10 @@ class MainWindow(QMainWindow):
         self.btn_origin_next_doc = QPushButton('>>')
         self.btn_origin_reset_view = QPushButton('⟳')
         self.btn_origin_reset_view.setFixedWidth(26)
+        self.origin_zoom_label = QLabel('x1.0')
+        self.origin_zoom_label.setFixedWidth(42)
+        self.origin_zoom_label.setStyleSheet('color:#d4dbe3; font-size:12px; font-weight:700;')
+        self.origin_zoom_label.setAlignment(Qt.AlignCenter)
         self.btn_origin_prev_doc.clicked.connect(self._prev_doc)
         self.btn_origin_prev_page.clicked.connect(self._prev_origin_page)
         self.btn_origin_next_page.clicked.connect(self._next_origin_page)
@@ -288,6 +297,10 @@ class MainWindow(QMainWindow):
         self.btn_here_add_page = QPushButton('+')
         self.btn_here_reset_view = QPushButton('⟳')
         self.btn_here_reset_view.setFixedWidth(26)
+        self.here_zoom_label = QLabel('x1.0')
+        self.here_zoom_label.setFixedWidth(42)
+        self.here_zoom_label.setStyleSheet('color:#d4dbe3; font-size:12px; font-weight:700;')
+        self.here_zoom_label.setAlignment(Qt.AlignCenter)
         self.btn_here_del_page = QPushButton('x')
         self.btn_here_del_page.setFixedWidth(24)
         self.btn_here_del_page.setStyleSheet(self.btn_close_doc.styleSheet())
@@ -340,6 +353,7 @@ class MainWindow(QMainWindow):
             self.btn_origin_next_page,
             self.btn_origin_next_doc,
             self.btn_origin_reset_view,
+            self.origin_zoom_label,
             self.btn_close_doc,
         ])
         self.here_page_controls = PanelControls([
@@ -347,6 +361,7 @@ class MainWindow(QMainWindow):
             self.btn_here_next_page,
             self.btn_here_add_page,
             self.btn_here_reset_view,
+            self.here_zoom_label,
             self.btn_here_del_page,
         ])
         self.here_controls = QWidget()
@@ -502,6 +517,9 @@ class MainWindow(QMainWindow):
 
     def _update_clipboard_count(self) -> None:
         self.clipboard_count_label.setText(f'({len(self.clipboard_store.items)})')
+
+    def _update_zoom_label(self, label: QLabel, ratio: float) -> None:
+        label.setText(f'x{max(0.1, float(ratio)):.1f}')
 
     def _load_doc(self) -> None:
         self.here_view._commit_text_editor()

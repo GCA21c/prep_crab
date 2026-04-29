@@ -14,6 +14,7 @@ class OriginView(QWidget):
     interaction_started = Signal(str)
     page_wheel_requested = Signal(int)
     file_wheel_requested = Signal(int)
+    zoom_changed = Signal(float)
 
     def __init__(self, loader: DocumentLoader) -> None:
         super().__init__()
@@ -105,12 +106,14 @@ class OriginView(QWidget):
             float(state.get('pan_x', self.default_pan.x())),
             float(state.get('pan_y', self.default_pan.y())),
         )
+        self._emit_zoom_changed()
 
     def reset_view_states(self) -> None:
         self.page_view_states.clear()
         self._last_view_key = None
         self.view_scale = self.default_view_scale
         self.pan = QPointF(self.default_pan)
+        self._emit_zoom_changed()
         self.update()
 
     def _reset_pan_if_needed(self) -> None:
@@ -118,10 +121,19 @@ class OriginView(QWidget):
             self.pan = QPointF(0, 0)
 
     def _zoom_at(self, pos: QPointF, factor: float) -> None:
+        self._zoom_to_scale(pos, float(self.view_scale) * factor)
+
+    def _zoom_step_at(self, pos: QPointF, direction: int) -> None:
+        ratio = self._zoom_ratio()
+        target_ratio = round(ratio + (0.1 if direction > 0 else -0.1), 1)
+        target_ratio = max(0.1, target_ratio)
+        self._zoom_to_scale(pos, self.default_view_scale * target_ratio)
+
+    def _zoom_to_scale(self, pos: QPointF, target_scale: float) -> None:
         if self.page_image is None:
             return
         old_scale = float(self.view_scale)
-        new_scale = max(0.1, min(old_scale * factor, 4.0))
+        new_scale = max(0.1, min(target_scale, 4.0))
         if abs(new_scale - old_scale) < 1e-9:
             return
         image_x = (float(pos.x()) + float(self.pan.x())) / old_scale
@@ -131,13 +143,14 @@ class OriginView(QWidget):
         self._reset_pan_if_needed()
         self._save_current_view_state()
         self._schedule_live_preview()
+        self._emit_zoom_changed()
         self.update()
 
     def zoom_in(self) -> None:
-        self._zoom_at(QPointF(self.width() / 2, self.height() / 2), 1.15)
+        self._zoom_step_at(QPointF(self.width() / 2, self.height() / 2), 1)
 
     def zoom_out(self) -> None:
-        self._zoom_at(QPointF(self.width() / 2, self.height() / 2), 1 / 1.15)
+        self._zoom_step_at(QPointF(self.width() / 2, self.height() / 2), -1)
 
     def reset_view(self) -> None:
         self._reset_view_to_fit(save_state=True)
@@ -159,12 +172,20 @@ class OriginView(QWidget):
 
     def _reset_view_to_fit(self, save_state: bool) -> None:
         self.view_scale = self._fit_view_scale_for_image()
+        self.default_view_scale = self.view_scale
         self.pan = QPointF(self.default_pan)
         self._reset_pan_if_needed()
         if save_state:
             self._save_current_view_state()
         self._schedule_live_preview()
+        self._emit_zoom_changed()
         self.update()
+
+    def _zoom_ratio(self) -> float:
+        return float(self.view_scale) / max(float(self.default_view_scale), 1e-6)
+
+    def _emit_zoom_changed(self) -> None:
+        self.zoom_changed.emit(self._zoom_ratio())
 
     def _view_to_image_rectf(self, rect: QRectF) -> QRectF:
         if self.page_image is None:
@@ -240,7 +261,7 @@ class OriginView(QWidget):
         if mods & Qt.ShiftModifier:
             self.page_wheel_requested.emit(-1 if event.angleDelta().y() > 0 else 1)
             return
-        self._zoom_at(event.position(), 1.15 if event.angleDelta().y() > 0 else 1 / 1.15)
+        self._zoom_step_at(event.position(), 1 if event.angleDelta().y() > 0 else -1)
 
     def keyPressEvent(self, event) -> None:
         if event.isAutoRepeat():

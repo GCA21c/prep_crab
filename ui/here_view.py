@@ -20,6 +20,7 @@ class HereView(QWidget):
     duplicate_to_clipboard_requested = Signal(object, object)
     undo_requested = Signal()
     drawing_properties_selected = Signal(object, object, object)
+    zoom_changed = Signal(float)
 
     def __init__(self) -> None:
         super().__init__()
@@ -110,6 +111,7 @@ class HereView(QWidget):
             self.zoom = self.default_zoom
             self.pan = QPointF(self.default_pan)
             self._save_current_view_state()
+            self._emit_zoom_changed()
             self.update()
 
     @property
@@ -141,6 +143,7 @@ class HereView(QWidget):
         state = self.page_view_states[self.current_page_index]
         self.zoom = float(state.get('zoom', self.default_zoom))
         self.pan = QPointF(float(state.get('pan_x', self.default_pan.x())), float(state.get('pan_y', self.default_pan.y())))
+        self._emit_zoom_changed()
 
     def add_page(self) -> None:
         self._save_current_view_state()
@@ -258,6 +261,7 @@ class HereView(QWidget):
         while len(self.page_view_states) < len(self.pages):
             self.page_view_states.append({'zoom': self.default_zoom, 'pan_x': self.default_pan.x(), 'pan_y': self.default_pan.y()})
         self.page_view_states[self.current_page_index] = {'zoom': self.default_zoom, 'pan_x': self.default_pan.x(), 'pan_y': self.default_pan.y()}
+        self._emit_zoom_changed()
         self.update()
 
     def _initial_block_dimensions(self, image: QImage) -> tuple[float, float]:
@@ -938,8 +942,17 @@ class HereView(QWidget):
         return QPointF((pos.x() + self.pan.x()) / self.zoom, (pos.y() + self.pan.y()) / self.zoom)
 
     def _zoom_at(self, pos: QPointF, factor: float) -> None:
+        self._zoom_to(pos, float(self.zoom) * factor)
+
+    def _zoom_step_at(self, pos: QPointF, direction: int) -> None:
+        ratio = self._zoom_ratio()
+        target_ratio = round(ratio + (0.1 if direction > 0 else -0.1), 1)
+        target_ratio = max(0.1, target_ratio)
+        self._zoom_to(pos, self.default_zoom * target_ratio)
+
+    def _zoom_to(self, pos: QPointF, target_zoom: float) -> None:
         old_zoom = float(self.zoom)
-        new_zoom = max(0.15, min(old_zoom * factor, 3.0))
+        new_zoom = max(0.15, min(target_zoom, 3.0))
         if abs(new_zoom - old_zoom) < 1e-9:
             return
         scene_x = (float(pos.x()) + float(self.pan.x())) / old_zoom
@@ -948,7 +961,14 @@ class HereView(QWidget):
         self.pan = QPointF(scene_x * new_zoom - float(pos.x()), scene_y * new_zoom - float(pos.y()))
         self._save_current_view_state()
         self._sync_text_editor_geometry()
+        self._emit_zoom_changed()
         self.update()
+
+    def _zoom_ratio(self) -> float:
+        return float(self.zoom) / max(float(self.default_zoom), 1e-6)
+
+    def _emit_zoom_changed(self) -> None:
+        self.zoom_changed.emit(self._zoom_ratio())
 
     def _content_scale(self, block: dict) -> float:
         original_w = max(1.0, float(block.get('original_w', block['image'].width())))
@@ -1263,7 +1283,7 @@ class HereView(QWidget):
         if event.modifiers() & Qt.ShiftModifier:
             self.page_wheel_requested.emit(-1 if event.angleDelta().y() > 0 else 1)
             return
-        self._zoom_at(event.position(), 1.15 if event.angleDelta().y() > 0 else 1 / 1.15)
+        self._zoom_step_at(event.position(), 1 if event.angleDelta().y() > 0 else -1)
 
     def keyPressEvent(self, event) -> None:
         mods = event.modifiers()
