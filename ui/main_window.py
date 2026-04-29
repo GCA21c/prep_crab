@@ -317,12 +317,19 @@ class MainWindow(QMainWindow):
         self.draw_text_size.setValue(14)
         self.draw_text_size.setSuffix('pt')
         self.draw_text_size.setFixedWidth(82)
+        self.btn_draw_bold = QPushButton('B')
+        self.btn_draw_bold.setCheckable(True)
+        self.btn_draw_bold.setFixedWidth(28)
+        bold_font = self.btn_draw_bold.font()
+        bold_font.setBold(True)
+        self.btn_draw_bold.setFont(bold_font)
         self.btn_draw_toggle.toggled.connect(self.here_view.set_drawing_enabled)
         self.btn_draw_hline.clicked.connect(lambda checked: self._set_here_drawing_tool('hline' if checked else ''))
         self.btn_draw_vline.clicked.connect(lambda checked: self._set_here_drawing_tool('vline' if checked else ''))
         self.btn_draw_box.clicked.connect(lambda checked: self._set_here_drawing_tool('textbox' if checked else ''))
         self.draw_line_width.valueChanged.connect(self.here_view.set_drawing_line_width)
         self.draw_text_size.valueChanged.connect(self.here_view.set_drawing_text_size)
+        self.btn_draw_bold.toggled.connect(self.here_view.set_drawing_text_bold)
 
         self.origin_header = PanelHeader('ORIGIN', self.doc_slots_label)
         self.clipboard_header = PanelHeader('CAPTURE BLOCKS', self.clipboard_count_label)
@@ -357,6 +364,7 @@ class MainWindow(QMainWindow):
             self.draw_line_width,
             self.btn_draw_box,
             self.draw_text_size,
+            self.btn_draw_bold,
         ):
             here_draw_row.addWidget(widget, 0)
         here_draw_row.addStretch(1)
@@ -530,7 +538,7 @@ class MainWindow(QMainWindow):
         self.here_view.setFocus()
         self._set_active_panel('here')
 
-    def _sync_here_drawing_controls(self, line_width, text_size) -> None:
+    def _sync_here_drawing_controls(self, line_width, text_size, bold) -> None:
         if line_width is not None:
             old = self.draw_line_width.blockSignals(True)
             self.draw_line_width.setValue(float(line_width))
@@ -539,6 +547,10 @@ class MainWindow(QMainWindow):
             old = self.draw_text_size.blockSignals(True)
             self.draw_text_size.setValue(int(text_size))
             self.draw_text_size.blockSignals(old)
+        if bold is not None:
+            old = self.btn_draw_bold.blockSignals(True)
+            self.btn_draw_bold.setChecked(bool(bold))
+            self.btn_draw_bold.blockSignals(old)
 
     def _send_clipboard_to_here(self, image, row: int) -> None:
         self._push_undo_state()

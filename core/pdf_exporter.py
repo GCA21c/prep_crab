@@ -64,7 +64,7 @@ class PdfExporter:
         c.setStrokeColorRGB(0, 0, 0)
         c.rect(x, y, w, h, stroke=1, fill=0)
         font_size = max(6.0, float(drawing.get('font_size', 14)))
-        c.setFont('Helvetica', font_size)
+        c.setFont('Helvetica-Bold' if drawing.get('bold', False) else 'Helvetica', font_size)
         text = str(drawing.get('text', ''))
         lines = text.splitlines() or ['']
         line_height = font_size * 1.2

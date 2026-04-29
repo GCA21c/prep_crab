@@ -19,7 +19,7 @@ class HereView(QWidget):
     history_checkpoint_requested = Signal()
     duplicate_to_clipboard_requested = Signal(object, object)
     undo_requested = Signal()
-    drawing_properties_selected = Signal(object, object)
+    drawing_properties_selected = Signal(object, object, object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -230,6 +230,21 @@ class HereView(QWidget):
                 if not changed:
                     self.history_checkpoint_requested.emit()
                 drawing['font_size'] = self.drawing_text_size
+                self._autosize_textbox_for_font(drawing)
+                changed = True
+        if self.text_editor is not None:
+            self._sync_text_editor_geometry()
+        if changed:
+            self.update()
+
+    def set_drawing_text_bold(self, bold: bool) -> None:
+        changed = False
+        for idx in self._selected_drawing_indices_sorted():
+            drawing = self.drawings[idx]
+            if drawing.get('type') == 'textbox' and bool(drawing.get('bold', False)) != bool(bold):
+                if not changed:
+                    self.history_checkpoint_requested.emit()
+                drawing['bold'] = bool(bold)
                 self._autosize_textbox_for_font(drawing)
                 changed = True
         if self.text_editor is not None:
@@ -480,9 +495,9 @@ class HereView(QWidget):
         if 0 <= self.selected_drawing_index < len(self.drawings):
             drawing = self.drawings[self.selected_drawing_index]
             if drawing.get('type') == 'textbox':
-                self.drawing_properties_selected.emit(None, int(drawing.get('font_size', self.drawing_text_size)))
+                self.drawing_properties_selected.emit(None, int(drawing.get('font_size', self.drawing_text_size)), bool(drawing.get('bold', False)))
             else:
-                self.drawing_properties_selected.emit(float(drawing.get('width', self.drawing_line_width)), None)
+                self.drawing_properties_selected.emit(float(drawing.get('width', self.drawing_line_width)), None, None)
 
     def _sync_text_editor_geometry(self) -> None:
         if self.text_editor is None or not (0 <= self.text_editor_index < len(self.drawings)):
@@ -495,11 +510,13 @@ class HereView(QWidget):
     def _scaled_text_font(self, drawing: dict) -> QFont:
         font = QFont()
         font.setPointSizeF(max(1.0, float(drawing.get('font_size', 14)) * self.zoom))
+        font.setBold(bool(drawing.get('bold', False)))
         return font
 
     def _textbox_min_size(self, drawing: dict) -> tuple[float, float]:
         font = QFont()
         font.setPointSize(max(6, int(drawing.get('font_size', self.drawing_text_size))))
+        font.setBold(bool(drawing.get('bold', False)))
         metrics = QFontMetricsF(font)
         lines = str(drawing.get('text', '')).splitlines() or ['']
         padding_x = 18.0
@@ -721,6 +738,7 @@ class HereView(QWidget):
                 'h': 1.0,
                 'text': '',
                 'font_size': int(self.drawing_text_size),
+                'bold': False,
                 'base_w': 1.0,
                 'base_h': 1.0,
                 'auto_sized': False,
