@@ -143,7 +143,10 @@ class DocumentLoader:
     def _open_hwp_via_pdf_bridge(self, src: Path) -> fitz.Document | None:
         resolved_src = src.expanduser().resolve()
         out_pdf = self._temp_dir / f'{resolved_src.stem}_{len(self.loaded_documents)+1}.pdf'
-        self._notify_progress(f'한글 별도 프로세스에서 PDF 변환 중...\n{resolved_src.name}')
+        self._notify_progress(
+            f'한글 별도 프로세스에서 PDF 변환 중...\n{resolved_src.name}\n'
+            '한글 보안 확인 창이 뜨면 허용을 눌러주세요.'
+        )
         ok, error = self._convert_office_to_pdf_subprocess('hwp', resolved_src, out_pdf)
         if ok:
             return fitz.open(str(out_pdf))

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import sys
+import time
 from pathlib import Path
 
 
@@ -83,6 +85,29 @@ def _set_hwp_visibility(hwp, visible: bool) -> None:
         pass
 
 
+def _bring_hwp_to_front(hwp) -> None:
+    try:
+        hwp.XHwpWindows.Item(0).Visible = True
+    except Exception:
+        pass
+    try:
+        hwp.XHwpWindows.Item(0).Activate()
+    except Exception:
+        pass
+    try:
+        hwnd = int(hwp.XHwpWindows.Item(0).Handle)
+    except Exception:
+        hwnd = 0
+    if hwnd:
+        try:
+            user32 = ctypes.windll.user32
+            user32.ShowWindow(hwnd, 5)
+            user32.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+    time.sleep(0.2)
+
+
 def _hwp_open(hwp, src: Path) -> tuple[bool, str]:
     attempts = (
         lambda: hwp.Open(str(src), '', 'forceopen:true'),
@@ -92,6 +117,7 @@ def _hwp_open(hwp, src: Path) -> tuple[bool, str]:
     last_error = ''
     for attempt in attempts:
         try:
+            _bring_hwp_to_front(hwp)
             result = attempt()
             if result is None or bool(result):
                 return True, ''
@@ -131,7 +157,10 @@ def convert_hwp(src: Path, out_pdf: Path) -> int:
             hwp = win32com.client.DispatchEx('HWPFrame.HwpObject')
         except Exception:
             hwp = win32com.client.Dispatch('HWPFrame.HwpObject')
-        _set_hwp_visibility(hwp, False)
+        # HWP/HWPX often triggers Hancom's access-permission dialog. Keep the
+        # window visible and foreground so the user can approve it.
+        _set_hwp_visibility(hwp, True)
+        _bring_hwp_to_front(hwp)
         ok, error = _hwp_open(hwp, src)
         if not ok:
             return _result(False, error)
