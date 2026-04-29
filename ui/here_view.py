@@ -523,6 +523,13 @@ class HereView(QWidget):
             drawing['auto_sized'] = grew
             self._sync_text_editor_geometry()
 
+    def _initial_textbox_font_size(self, drawing: dict) -> int:
+        width = max(1.0, float(drawing.get('w', 1.0)))
+        height = max(1.0, float(drawing.get('h', 1.0)))
+        size_by_height = height * 0.42
+        size_by_width = width * 0.18
+        return max(6, min(72, int(round(min(size_by_height, size_by_width)))))
+
     def _textbox_resize_handle_rect(self, drawing: dict) -> QRectF:
         rect = self._drawing_rect_view(drawing)
         size = 8.0
@@ -587,7 +594,7 @@ class HereView(QWidget):
             bounds = rect if bounds is None else bounds.united(rect)
         return bounds
 
-    def _apply_drawing_center_magnet(self, indices: list[int], threshold_px: float = 8.0) -> None:
+    def _apply_drawing_center_magnet(self, indices: list[int], threshold_px: float = 4.0) -> None:
         bounds = self._drawing_scene_bounds(indices)
         if bounds is None:
             self._clear_guides()
@@ -766,9 +773,11 @@ class HereView(QWidget):
                 return
             drawing['base_w'] = float(drawing.get('w', 1.0))
             drawing['base_h'] = float(drawing.get('h', 1.0))
+            drawing['font_size'] = self._initial_textbox_font_size(drawing)
             drawing['auto_sized'] = False
             index = self.drawings.index(drawing) if drawing in self.drawings else -1
             if index >= 0:
+                self._emit_selected_drawing_properties()
                 self._start_text_editor(index)
             return
         if abs(float(drawing.get('x2', 0.0)) - float(drawing.get('x1', 0.0))) < 3.0 and abs(float(drawing.get('y2', 0.0)) - float(drawing.get('y1', 0.0))) < 3.0:

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import tempfile
+import json
+import subprocess
+import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -111,73 +115,12 @@ class DocumentLoader:
 
     def _open_word_via_pdf_bridge(self, src: Path) -> fitz.Document | None:
         resolved_src = src.expanduser().resolve()
-        try:
-            import pythoncom  # type: ignore
-            import win32com.client  # type: ignore
-        except Exception as exc:
-            self._last_word_error = f'pywin32 import 실패: {exc}'
-            return None
-        word = None
-        doc = None
-        try:
-            pythoncom.CoInitialize()
-            self._notify_progress(f'Word 자동화 연결 중...\n{resolved_src.name}')
-            try:
-                word = win32com.client.Dispatch('Word.Application')
-            except Exception:
-                word = win32com.client.DispatchEx('Word.Application')
-            word.Visible = False
-            word.DisplayAlerts = 0
-            self._notify_progress(f'Word에서 문서 여는 중...\n{resolved_src.name}')
-            doc = word.Documents.Open(
-                FileName=str(resolved_src),
-                ConfirmConversions=False,
-                ReadOnly=True,
-                AddToRecentFiles=False,
-                Revert=False,
-                NoEncodingDialog=True,
-                OpenAndRepair=True,
-            )
-            out_pdf = self._temp_dir / f'{resolved_src.stem}_{len(self.loaded_documents)+1}.pdf'
-            try:
-                if out_pdf.exists():
-                    out_pdf.unlink()
-            except Exception:
-                pass
-            self._notify_progress(f'PDF로 변환 중...\n{resolved_src.name}')
-            try:
-                doc.ExportAsFixedFormat(
-                    OutputFileName=str(out_pdf),
-                    ExportFormat=17,
-                    OpenAfterExport=False,
-                    OptimizeFor=0,
-                    Range=0,
-                    Item=0,
-                    CreateBookmarks=1,
-                )
-            except Exception:
-                doc.SaveAs(str(out_pdf), FileFormat=17)
-            if out_pdf.exists() and out_pdf.stat().st_size > 0:
-                return fitz.open(str(out_pdf))
-            self._last_word_error = 'Word가 PDF 파일을 생성하지 않았습니다.'
-        except Exception as exc:
-            self._last_word_error = str(exc)
-            return None
-        finally:
-            try:
-                if doc is not None:
-                    doc.Close(False)
-            except Exception:
-                pass
-            try:
-                if word is not None:
-                    word.Quit()
-            except Exception:
-                pass
-            try:
-                pythoncom.CoUninitialize()
-            except Exception:
-                pass
+        out_pdf = self._temp_dir / f'{resolved_src.stem}_{len(self.loaded_documents)+1}.pdf'
+        self._notify_progress(f'Word 별도 프로세스에서 PDF 변환 중...\n{resolved_src.name}')
+        ok, error = self._convert_office_to_pdf_subprocess('word', resolved_src, out_pdf)
+        if ok:
+            return fitz.open(str(out_pdf))
+        self._last_word_error = error
         return None
 
     def _notify_progress(self, message: str) -> None:
@@ -199,57 +142,51 @@ class DocumentLoader:
 
     def _open_hwp_via_pdf_bridge(self, src: Path) -> fitz.Document | None:
         resolved_src = src.expanduser().resolve()
-        try:
-            import pythoncom  # type: ignore
-            import win32com.client  # type: ignore
-        except Exception as exc:
-            self._last_hwp_error = f'pywin32 import 실패: {exc}'
-            return None
-        hwp = None
-        try:
-            pythoncom.CoInitialize()
-            self._notify_progress(f'한글 자동화 연결 중...\n{resolved_src.name}')
-            try:
-                hwp = win32com.client.Dispatch('HWPFrame.HwpObject')
-            except Exception:
-                hwp = win32com.client.DispatchEx('HWPFrame.HwpObject')
-            self._set_hwp_visibility(hwp, False)
-            self._notify_progress(f'한글에서 문서 여는 중...\n{resolved_src.name}')
-            if not self._hwp_open(hwp, resolved_src):
-                self._last_hwp_error = self._last_hwp_error or '한글이 문서를 열지 못했습니다.'
-                return None
-            out_pdf = self._temp_dir / f'{resolved_src.stem}_{len(self.loaded_documents)+1}.pdf'
-            try:
-                if out_pdf.exists():
-                    out_pdf.unlink()
-            except Exception:
-                pass
-            self._notify_progress(f'PDF로 변환 중...\n{resolved_src.name}')
-            if not self._hwp_save_pdf(hwp, out_pdf):
-                self._last_hwp_error = self._last_hwp_error or '한글이 PDF 파일을 생성하지 않았습니다.'
-                return None
-            if out_pdf.exists() and out_pdf.stat().st_size > 0:
-                return fitz.open(str(out_pdf))
-            self._last_hwp_error = '한글이 PDF 파일을 생성하지 않았습니다.'
-        except Exception as exc:
-            self._last_hwp_error = str(exc)
-            return None
-        finally:
-            try:
-                if hwp is not None:
-                    hwp.Clear(1)
-            except Exception:
-                pass
-            try:
-                if hwp is not None:
-                    hwp.Quit()
-            except Exception:
-                pass
-            try:
-                pythoncom.CoUninitialize()
-            except Exception:
-                pass
+        out_pdf = self._temp_dir / f'{resolved_src.stem}_{len(self.loaded_documents)+1}.pdf'
+        self._notify_progress(f'한글 별도 프로세스에서 PDF 변환 중...\n{resolved_src.name}')
+        ok, error = self._convert_office_to_pdf_subprocess('hwp', resolved_src, out_pdf)
+        if ok:
+            return fitz.open(str(out_pdf))
+        self._last_hwp_error = error
         return None
+
+    def _convert_office_to_pdf_subprocess(self, kind: str, src: Path, out_pdf: Path, timeout_sec: int = 180) -> tuple[bool, str]:
+        bridge = Path(__file__).with_name('office_bridge.py')
+        cmd = [
+            sys.executable,
+            str(bridge),
+            '--kind',
+            kind,
+            '--src',
+            str(src),
+            '--out',
+            str(out_pdf),
+        ]
+        try:
+            completed = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_sec,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            )
+        except subprocess.TimeoutExpired:
+            return False, f'{kind} 변환 제한 시간({timeout_sec}초)을 초과했습니다.'
+        except Exception as exc:
+            return False, f'{kind} 변환 프로세스 실행 실패: {exc}'
+        finally:
+            # COM servers may need a short interval to release file and automation locks.
+            time.sleep(0.8)
+
+        message = (completed.stdout or '').strip().splitlines()[-1:] or ['']
+        try:
+            payload = json.loads(message[0]) if message[0] else {}
+        except Exception:
+            payload = {}
+        if completed.returncode == 0 and out_pdf.exists() and out_pdf.stat().st_size > 0:
+            return True, ''
+        error = str(payload.get('error') or completed.stderr or completed.stdout or f'{kind} 변환 실패').strip()
+        return False, error
 
     def _set_hwp_visibility(self, hwp, visible: bool) -> None:
         try:

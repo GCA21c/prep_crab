@@ -492,6 +492,7 @@ class MainWindow(QMainWindow):
         self.clipboard_count_label.setText(f'({len(self.clipboard_store.items)})')
 
     def _load_doc(self) -> None:
+        self.here_view._commit_text_editor()
         self._show_busy('문서 로드 중', '불러올 문서를 선택하는 중...')
         try:
             loaded = self.loader.open_file_dialog(
