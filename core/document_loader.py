@@ -155,17 +155,29 @@ class DocumentLoader:
         return None
 
     def _convert_office_to_pdf_subprocess(self, kind: str, src: Path, out_pdf: Path, timeout_sec: int = 180) -> tuple[bool, str]:
-        bridge = Path(__file__).with_name('office_bridge.py')
-        cmd = [
-            sys.executable,
-            str(bridge),
-            '--kind',
-            kind,
-            '--src',
-            str(src),
-            '--out',
-            str(out_pdf),
-        ]
+        if getattr(sys, 'frozen', False):
+            cmd = [
+                sys.executable,
+                '--office-bridge',
+                '--kind',
+                kind,
+                '--src',
+                str(src),
+                '--out',
+                str(out_pdf),
+            ]
+        else:
+            bridge = Path(__file__).with_name('office_bridge.py')
+            cmd = [
+                sys.executable,
+                str(bridge),
+                '--kind',
+                kind,
+                '--src',
+                str(src),
+                '--out',
+                str(out_pdf),
+            ]
         try:
             completed = subprocess.run(
                 cmd,
